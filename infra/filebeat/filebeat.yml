@@ -1,0 +1,354 @@
+# ---------------------------------------------------------------------------
+# Filebeat 8.x — ships audit_logging JSONL to the apiaudit data streams.
+#
+# The package writes {log_dir}/{service_name}-{pid}.jsonl (FR-26) and each pod
+# mounts /var/log/audit read-write under its own $POD_NAME subdirectory
+# (plan §4.3), so on the node the tree is:
+#
+#     /var/log/audit/<pod-name>/<service>-<pid>.jsonl
+#     /var/log/audit/<pod-name>/<service>-<pid>.jsonl.1   ... .8   (rotated, FR-22)
+#
+# Filebeat owns nothing in Elasticsearch: the index template and the ILM policy
+# are installed by infra/elasticsearch/bootstrap.py. Both setup paths below are
+# therefore disabled, on purpose. If Filebeat were allowed to load its own
+# template it would install a dynamic:true mapping and quietly defeat AC-10.
+#
+# The Elasticsearch user this ships as (filebeat_writer) MUST NOT hold
+# manage_index_templates or manage_ilm. See infra/README.md §3 — a Filebeat
+# that can rewrite the template can undo dynamic:false, and AC-10 with it.
+#
+# ---------------------------------------------------------------------------
+# SIZING INVARIANTS — every number below is derived from these. Re-derive them
+# if you change AuditConfig.max_body_bytes (default 1 MiB, D-4).
+#
+#   B  = max_body_bytes                                   = 1 048 576 B
+#   L  = worst-case JSONL line                            = 6 x B + envelope
+#   M  = message_max_bytes        >= 1.3 x L              = 8 MiB
+#   S  = queue.disk.segment_size  >= 2 x M                = 100 MB (prod)
+#   Q  = queue.disk.max_size      >= 2 x S                = 2200 MB
+#   N  = bulk_max_size            <= 0.75 x 100 MB / L    = 12 documents
+#
+# Where L comes from (recomputed after docs/schema.md §2.9 made
+# audit.request.body and audit.request.body_raw mutually exclusive, so a body
+# is now stored ONCE, not twice):
+#
+#   Worst case is the JSON parse-failure path — FR-09/AC-14 keep the raw text
+#   verbatim in body_raw, and JSON string escaping is what expands it. Measured
+#   against the real serialiser (audit_logging.sinks.file_sink._dumps), 1 MiB
+#   bodies, one line each:
+#
+#     body of ...            JSONL line      x B     why
+#     ASCII 'x'               1 049 691     1.00     no escaping
+#     '"' / '\' / '\n' / '\t' 2 098 267     2.00     2-byte escapes
+#     invalid UTF-8 (0x80)    3 146 843     3.00     -> U+FFFD, 3 UTF-8 bytes
+#     control char 0x01       6 292 571     6.00     -> \u0001, 6 bytes  <-- WORST
+#
+#   6 292 571 B is the ceiling. message_max_bytes 8 MiB (8 388 608) clears it
+#   by 2 096 037 B (33 %). The old value, 2 097 152, was 4.2 MB SHORT of it:
+#   review M-3, where the line was truncated, failed ndjson decode, and was
+#   silently discarded by a drop_event processor. Both halves are fixed here —
+#   the ceiling below, and the quarantine route under "Processors" that makes
+#   an undecodable line VISIBLE instead of dropping it.
+# ---------------------------------------------------------------------------
+
+filebeat.inputs:
+  - type: filestream
+    id: audit-logging-jsonl          # stable: the registry is keyed on this
+    enabled: true
+    paths:
+      - /var/log/audit/*/*.jsonl
+      # Rotated files ARE globbed, and this is a fix, not an oversight
+      # (review S-13). The previous config excluded '\.jsonl\.\d+$' and
+      # justified it with "filestream follows an open file across the rename".
+      # That is true only while Filebeat is RUNNING. If the DaemonSet pod is
+      # down when FileSink._rotate() runs — node drain, rolling update with
+      # maxUnavailable: 1, OOM-kill, config reload — the unshipped tail of the
+      # old file is now at .1, which matched neither the glob nor the scanner,
+      # and clean_removed then reaped its registry state. Those lines were
+      # never shipped. That contradicts D-2 and AC-12.
+      #
+      # Globbing them does NOT duplicate anything, because file_identity is
+      # native (inode + device) and a rename does not change the inode: the
+      # scanner finds the existing registry entry for that inode, updates its
+      # path, and resumes at the stored offset. Duplication would only happen
+      # under file_identity.path — which is why it is pinned explicitly below
+      # rather than left to the default.
+      - /var/log/audit/*/*.jsonl.[0-9]
+
+    prospector.scanner.exclude_files: ['\.gz$', '\.tmp$']
+
+    # Pinned, not defaulted. The S-13 fix above is only correct for `native`;
+    # switching to `path` or `fingerprint` would re-ingest every rotated file
+    # in full. Changing this on a live deployment invalidates the registry.
+    file_identity.native: ~
+
+    parsers:
+      - ndjson:
+          # `target: ""` is filestream's spelling of the old
+          # `json.keys_under_root: true` — decode each line into the event root
+          # so data_stream.*, event.*, audit.* land where the mapping expects.
+          target: ""
+          # Required with target "": lets the document's own @timestamp and
+          # message win over the ones Filebeat generates. Without it the ES
+          # @timestamp is the moment Filebeat read the line, not the moment the
+          # request completed, and every latency query is wrong.
+          overwrite_keys: true
+          add_error_key: true
+          # false = LOG the decoding error. It does not drop the event; the
+          # event still arrives carrying `message` (the raw line) and
+          # `error.{message,type}`, which is exactly what the quarantine route
+          # below needs. Keep it false: a silent decode failure is the failure
+          # mode M-3 was about.
+          ignore_decoding_error: false
+
+    # Read from the start: on first rollout there is already a backlog on disk,
+    # and D-2 says nothing is dropped.
+    ignore_older: 72h
+    close.on_state_change.inactive: 5m
+    close.on_state_change.removed: true
+    clean_removed: true
+
+    # See the SIZING INVARIANTS block. 8 MiB, not the old 2 MiB, and not the
+    # filestream default of 10 MB either — 8 MiB is the largest value that
+    # still leaves room inside a 10 MB disk-queue segment, which is what the
+    # acceptance stack overrides segment_size to.
+    message_max_bytes: 8388608
+
+# ---------------------------------------------------------------------------
+# Processors
+# ---------------------------------------------------------------------------
+# Everything Filebeat adds by itself would be dropped at index time anyway
+# (the template is dynamic:false), so drop it here and save the bulk bandwidth.
+# NOTE: `host` is NOT dropped — host.hostname is ours, written by the package
+# (docs/schema.md §2.3). Do not add add_host_metadata: it would overwrite it.
+#
+# `message` is NOT in this list, and does not need to be (review N-11, which
+# is not a real defect — verified against beats v8.13.4 source, not guessed):
+# libbeat/reader/readjson/json.go `JSONReader.decode` returns `[]byte("")` as
+# the message Content on a SUCCESSFUL decode when no message_key is set, and
+# reader.Message.ToEvent only sets Fields["message"] when len(Content) > 0. So
+# a decoded audit document carries no second copy of itself. On a FAILED
+# decode the same function returns the raw text, which is why the quarantine
+# branch below has a `message` to preserve.
+processors:
+  - drop_fields:
+      fields: ["agent", "ecs", "input", "log", "@metadata.raw_index"]
+      ignore_missing: true
+
+  # -------------------------------------------------------------------------
+  # Undecodable lines are QUARANTINED, never dropped (D-2, review M-3).
+  # -------------------------------------------------------------------------
+  # A line that did not decode has no data_stream.dataset, so the index format
+  # string below would expand to a literal "logs--" and the write would be
+  # rejected or land somewhere nobody looks. The previous config solved that
+  # with `drop_event`, which is precisely the silent loss M-3 is about: the
+  # package counted the document as submitted and written, Filebeat threw it
+  # away, and no counter on either side recorded it.
+  #
+  # Instead the line is routed to its own data stream,
+  # logs-apiaudit.undecodable-<namespace>, carrying:
+  #   message        the raw line, truncated to 8 KiB (enough to identify the
+  #                  service, trace.id and route; the whole point is that this
+  #                  line was already too big or already malformed)
+  #   error.message  Filebeat's decode error, from add_error_key
+  #
+  # The template is dynamic:false and declares no `message`, so it is stored in
+  # _source and visible in Kibana's document viewer but never indexed — it
+  # cannot blow the field budget (AC-10). data_stream.dataset IS indexed
+  # (constant_keyword), so counting the loss is one term query. The runbook
+  # query is in infra/README.md §6 "Detecting a silently lost line".
+  #
+  # The test is deliberately "is data_stream.dataset present", NOT "did
+  # add_error_key set error.message". `error.message` is a legitimate field of
+  # our own schema (docs/schema.md §2.6, present on every failed request), so
+  # keying on it would quarantine exactly the documents an audit log exists to
+  # keep.
+  - if:
+      has_fields: ["data_stream.dataset"]
+    then:
+      # Decoded cleanly, so the document routes itself. `message` is provably
+      # absent here (see the note above this processor list); dropping it is
+      # belt-and-braces against a future Beats change re-introducing N-11, and
+      # the `if` processor requires a non-empty `then` anyway.
+      - drop_fields:
+          fields: ["message"]
+          ignore_missing: true
+    else:
+      - truncate_fields:
+          fields: ["message"]
+          max_bytes: 8192
+          fail_on_error: false
+          ignore_missing: true
+      - add_fields:
+          target: "data_stream"
+          fields:
+            type: "logs"
+            dataset: "apiaudit.undecodable"
+            namespace: "${AUDIT_NAMESPACE:prod}"
+      - add_fields:
+          target: "event"
+          fields:
+            kind: "event"
+            outcome: "failure"
+
+# ---------------------------------------------------------------------------
+# Output — routed from the document's own fields (plan §4.3)
+# ---------------------------------------------------------------------------
+output.elasticsearch:
+  hosts: ["${ES_HOSTS:https://elasticsearch.internal:9200}"]
+  username: "${ES_USERNAME}"
+  password: "${ES_PASSWORD}"
+  ssl.certificate_authorities: ["/etc/filebeat/certs/ca.crt"]
+  ssl.verification_mode: full
+
+  # The whole routing contract in one line. data_stream.type/dataset/namespace
+  # are constant_keyword in the mapping and are written by the package
+  # (AuditConfig.data_stream_dataset -> "apiaudit.<sanitised service_name>"),
+  # or by the quarantine branch above for a line that did not decode.
+  index: "%{[data_stream.type]}-%{[data_stream.dataset]}-%{[data_stream.namespace]}"
+
+  # ---- bulk sizing (review S-12) ------------------------------------------
+  # The old value was 200, sized by a comment reading "~200 x 2 KB ~ 400 KB per
+  # bulk". D-4 permits 1 MiB bodies, and the SIZING INVARIANTS block above puts
+  # the worst-case line at 6 292 571 B, so those same 200 documents are
+  # 1 258 514 200 B = 1.26 GB — twelve times Elasticsearch's
+  # `http.max_content_length` default of 100 MB. (The review said 397 MiB; that
+  # figure used the 2.08 MB ASCII line and is the floor, not the ceiling.)
+  # The bulk is refused with a 413 and, because Filebeat retries a failed bulk
+  # indefinitely (see max_retries below), the shipper wedges for every service
+  # on the node. This is sized so a bulk of worst-case documents still fits:
+  #
+  #     12 x 6 292 571 B  =  75 510 852 B  =  72 % of 104 857 600 B
+  #
+  # Typical traffic is ~2 KB/document, so a full bulk is normally ~24 KB and
+  # the count is the binding constraint, not the bytes. If you lower
+  # AuditConfig.max_body_bytes, raise this proportionally; the invariant is
+  #     bulk_max_size x 6 x max_body_bytes  <  0.75 x http.max_content_length
+  # Filebeat 8.13 has no byte-based bulk limit (elastic/beats#3688), so the
+  # count is the only lever.
+  bulk_max_size: 12
+
+  # 2 workers x 12 documents x 6.29 MB = 151 MB of worst-case bulk buffers,
+  # roughly doubled while gzip runs. That is why the DaemonSet's memory limit
+  # moved from 500Mi to 1Gi (review S-12). Raise `worker` and memory together,
+  # never one alone.
+  worker: 2
+  compression_level: 3
+  backoff.init: 1s
+  backoff.max: 60s
+
+  # NOT a lever, despite appearances. The Filebeat 8.x Elasticsearch output
+  # documents this verbatim: "Filebeat ignores the max_retries setting and
+  # retries indefinitely." Setting it to 3 would not stop the 413 wedge S-12
+  # describes, it would only look like it had. The wedge is prevented by
+  # bulk_max_size above (no 413 to retry) and by non_indexable_policy below
+  # (per-document permanent rejections leave the pipeline instead of spinning).
+  # Keeping -1 also keeps D-2 honest for the case that matters: a genuine ES
+  # outage must back up into queue.disk and then into the JSONL files on the
+  # node, not be discarded after N attempts.
+  max_retries: -1
+
+  # ---- permanently rejected documents go somewhere, not nowhere ------------
+  # Elasticsearch rejects a whole document, not a field, for a mapping error —
+  # index.mapping.ignore_malformed covers only numeric, boolean, date, ip and
+  # geo types, never keyword or flattened. Two live examples:
+  #   * review M-5: a user_resolver returning a dict for user.roles;
+  #   * review N-9: a JSON body key over ~29.7 KB, which makes the flattened
+  #     key + NUL + value term exceed Lucene's MAX_TERM_LENGTH of 32 766
+  #     (confirmed in elasticsearch v8.13.4 FlattenedFieldParser.addField,
+  #     which throws IllegalArgumentException before it ever looks at
+  #     index/doc_values — so no template setting can avoid it);
+  #   * the same method throws on any body key containing a NUL character,
+  #     which costs an attacker 15 bytes. Not in the review; found here.
+  # The default policy for such a document is `drop` — silent. Send it to a
+  # dead-letter index instead: the document arrives as `message` (the escaped
+  # original) plus error.type (the HTTP status) and error.message (ES's
+  # reason), which is enough to tell an operator which audit record was lost
+  # and why. filebeat_writer needs auto_configure + create_doc on
+  # apiaudit-dead-letter* as well; see infra/README.md §3.
+  non_indexable_policy.dead_letter_index:
+    index: "apiaudit-dead-letter"
+
+setup.template.enabled: false   # bootstrap.py owns the index template
+setup.ilm.enabled: false        # bootstrap.py owns the ILM policy
+setup.dashboards.enabled: false # infra/kibana/dashboards.ndjson, imported by hand
+
+# Filebeat refuses to start with a custom `output.elasticsearch.index` unless
+# setup.template.name and .pattern are also set — the check fires before it
+# notices template loading is disabled. Nothing is loaded from them.
+setup.template.name: "logs-apiaudit"
+setup.template.pattern: "logs-apiaudit.*-*"
+
+# ---------------------------------------------------------------------------
+# Disk queue — durability across an Elasticsearch outage (D-6)
+# ---------------------------------------------------------------------------
+# Sized from plan §5, "node buffer for 6 h ES outage", **50 rps row = 2.2 GB**.
+# That is the middle row and the honest default while I-1 (real peak rps) is
+# unanswered; it is also the row whose 8.6 GB neighbour would not fit on a
+# typical RKE2 node's /var without a conversation.
+#
+#   plan §5 row   6 h ES outage   set max_size to
+#   ------------  --------------  ---------------
+#    10 rps        0.4 GB          400MB
+#    50 rps        2.2 GB          2200MB   <-- chosen
+#   200 rps        8.6 GB          8800MB
+#
+# This is a *second* buffer, not the only one: the JSONL files on the node are
+# the primary one (file_max_bytes 256 MB x file_backup_count 8 = 2 GB per pod,
+# plan §5). When the disk queue fills, Filebeat stops reading and the files
+# hold the backlog until rotation eats it. Size the node's /var/log/audit for
+# 2 GB x (audited pods per node) independently of the number below.
+#
+# segment_size is NOT cosmetic. diskqueue.handleProducerWriteRequest
+# (beats v8.13.4 core_loop.go) rejects any event larger than
+# `segment_size - segmentHeaderSize` with a Warn and DROPS it — the same class
+# of quiet loss as M-3, one layer down. With message_max_bytes at 8 MiB the
+# floor is 8 MiB; 100MB gives 12x headroom. The config also validates
+# max_size >= 2 x segment_size.
+#
+#   *** tests/integration/docker-compose.test.yml overrides segment_size to
+#   *** 10MB. That is above the 8 MiB floor but only by ~1.6 MB, i.e. it no
+#   *** longer satisfies "segment_size >= 2 x message_max_bytes". Raise that
+#   *** override to 64MB (its max_size=200MB override permits up to 100MB).
+#   *** Ordinary test traffic is nowhere near this; a deliberately adversarial
+#   *** body in a future test would be dropped with only a warn line.
+queue.disk:
+  path: "${path.data}/diskqueue"
+  max_size: 2200MB
+  segment_size: 100MB
+  # read_ahead / write_ahead are counts of EVENTS held in memory, not bytes —
+  # Filebeat has no byte bound for them (elastic/beats#13740). At the defaults
+  # (512 / 2048) a burst of worst-case 6.29 MB documents is 3.2 GB / 12.9 GB of
+  # RSS in a container limited to 1Gi. Lowered so the realistic case is small
+  # and the adversarial case is survivable; the only real bound on the
+  # adversarial case is AuditConfig.max_body_bytes, which is the operator's
+  # lever if this ever bites.
+  read_ahead: 32
+  write_ahead: 256
+  retry_interval: 1s
+  max_retry_interval: 30s
+
+# ---------------------------------------------------------------------------
+# Filebeat's own housekeeping
+# ---------------------------------------------------------------------------
+# The registry lives under path.data, which the DaemonSet puts on a hostPath so
+# it survives a Filebeat restart (plan R-11). Losing it means re-reading every
+# file from the start: duplicates, which are deduplicated on the composite key
+# (trace.id, @timestamp, host.hostname, process.pid) and NOT on trace.id alone
+# — FR-23 lets a client pin X-Request-ID, so trace.id is client-chosen and one
+# client can make every request it ever sends look like the same event
+# (review N-12). infra/README.md §6 has the collapse query.
+path.data: /usr/share/filebeat/data
+filebeat.registry.flush: 5s
+
+http.enabled: true
+http.host: 0.0.0.0
+http.port: 5066
+
+logging.level: info
+logging.to_files: false
+logging.to_stderr: true
+logging.metrics.enabled: true
+logging.metrics.period: 60s
+
+monitoring.enabled: false   # air-gapped: no phone-home, no self-monitoring index

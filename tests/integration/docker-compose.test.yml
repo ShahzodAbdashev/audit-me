@@ -1,0 +1,161 @@
+# ---------------------------------------------------------------------------
+# Tier 1 acceptance stack: the real path, file -> Filebeat -> Elasticsearch.
+#
+#     pytest writes  ${AUDIT_TEST_LOG_DIR}/orders-api-<pid>.jsonl
+#                              │   (bind mount)
+#     filebeat sees  /var/log/audit/testpod/orders-api-<pid>.jsonl
+#                              │   filestream + ndjson, index from data_stream.*
+#     elasticsearch  logs-apiaudit.<service>-<env>
+#
+# The Filebeat config is `infra/filebeat/filebeat.yml` **verbatim** — the same
+# file the DaemonSet ships. Nothing about the shipper is re-specified here; the
+# handful of things that must differ for a laptop (plaintext HTTP, no CA, a
+# disk queue that fits) are `-E` overrides on the command line, so the file
+# under test stays byte-identical to the one that goes to production.
+#
+# WARNING: this stack is deliberately insecure — security disabled, no TLS, no
+# credentials, bound to localhost. It is a test fixture, never a deployment.
+#
+#   docker compose -f tests/integration/docker-compose.test.yml up -d
+#   ./.venv/bin/python -m pytest tests/integration -q -m integration
+#   docker compose -f tests/integration/docker-compose.test.yml down -v
+# ---------------------------------------------------------------------------
+
+name: audit-logging-acceptance
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: audit-acceptance-es
+    environment:
+      - discovery.type=single-node
+      - cluster.name=audit-acceptance
+      # Security off: this stack holds nothing and lives for one test run.
+      # It is why the tests talk plain http:// with no credentials.
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.enrollment.enabled=false
+      # Air-gapped-friendly: no phone-home on boot.
+      - ingest.geoip.downloader.enabled=false
+      - xpack.ml.enabled=false
+      # A 512 MB heap. The host this was written on had ~3 GB free; a default
+      # 8.x heap (half of RAM) would have been killed by the OOM killer.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # A laptop /var is usually over the 85% watermark, and a read-only index
+      # block is a baffling way to fail an acceptance test.
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - action.destructive_requires_name=false
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    mem_limit: 1500m
+    ports:
+      - "127.0.0.1:9200:9200"
+    healthcheck:
+      # `yellow` is the correct expectation: the index template asks for one
+      # replica and this is a one-node cluster, so every index is yellow and
+      # stays that way. Writes are unaffected.
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    container_name: audit-acceptance-filebeat
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    # A5's README §5: Filebeat runs as root so it can read files written by
+    # application containers under arbitrary UIDs. Same reason here — pytest
+    # writes the JSONL as the host user.
+    user: root
+    environment:
+      - ES_HOSTS=http://elasticsearch:9200
+      - ES_USERNAME=
+      - ES_PASSWORD=
+    # `infra/filebeat/filebeat.yml` is mounted unchanged. These -E flags are
+    # the only differences, and each one is a property of the test stack, not
+    # of the shipper:
+    #   ssl.enabled     the stack speaks plain HTTP; there is nothing to verify.
+    #   username/password  security is disabled, so basic auth would 401.
+    #   queue.disk      2200MB is sized for a 6 h production outage (plan §5);
+    #                   200MB is all a test run can be asked to reserve.
+    #
+    # queue.disk.segment_size was 10MB and is now 64MB. A5 raised
+    # `message_max_bytes` to 8 MiB after recomputing the worst-case line — a
+    # 1 MiB body of control characters JSON-escapes to `\u0001` six bytes at a
+    # time, 6 292 571 B, which A8's 2-3x estimate missed. Filebeat's disk queue
+    # (`diskqueue.handleProducerWriteRequest`, beats v8.13.4 `core_loop.go`)
+    # refuses any event larger than `segment_size - segmentHeaderSize` with a
+    # `Warnf` and DROPS it — the same silent loss as review M-3, one layer
+    # down, with no counter on either side. 10MB cleared the 8 MiB floor by
+    # only ~1.6 MB and no longer satisfied the invariant filebeat.yml states,
+    # `segment_size >= 2 x message_max_bytes`. 64MB satisfies it with 4x
+    # headroom and still leaves max_size >= 2 x segment_size (200 >= 128), the
+    # constraint Filebeat validates at startup.
+    #
+    # `tests/integration/test_acceptance_local.py::
+    #  test_AC_20_the_acceptance_stacks_disk_queue_can_hold_that_line` reads
+    # both numbers back out of this file and re-derives both invariants, so
+    # this comment cannot drift away from the flags below it.
+    #
+    # `ssl.certificate_authorities` is deliberately NOT overridden. Filebeat
+    # validates that path when it loads the config, before it notices that TLS
+    # is disabled, so the file has to exist — hence the throwaway self-signed
+    # certificate mounted at the path filebeat.yml names. It is never used to
+    # verify anything: the output is plain HTTP.
+    command:
+      - filebeat
+      - -e
+      - --strict.perms=false
+      - -E
+      - output.elasticsearch.ssl.enabled=false
+      - -E
+      - output.elasticsearch.ssl.verification_mode=none
+      - -E
+      - output.elasticsearch.username=
+      - -E
+      - output.elasticsearch.password=
+      - -E
+      - queue.disk.max_size=200MB
+      - -E
+      - queue.disk.segment_size=64MB
+    volumes:
+      # The shipper under test, read-only and unmodified.
+      - ../../infra/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      # A placeholder CA at the path filebeat.yml points at, so the config
+      # loads. Self-signed, no private key anywhere, verifies nothing.
+      - ./stack/ca.crt:/etc/filebeat/certs/ca.crt:ro
+      # The pod-name level the production glob expects: /var/log/audit/*/*.jsonl
+      - ${AUDIT_TEST_LOG_DIR:-./.stack/logs}:/var/log/audit/testpod
+      # The registry, so a `docker compose restart filebeat` does not re-ship
+      # every line from the start (plan R-11).
+      - filebeat-data:/usr/share/filebeat/data
+    ports:
+      - "127.0.0.1:5066:5066"   # http.enabled: true — /stats for debugging
+    # 1g, matching the DaemonSet's limit, not the 400m this used to be. Same
+    # class of drift as the segment_size above: A5 moved the DaemonSet from
+    # 500Mi to 1Gi (review S-12) because `worker: 2` x `bulk_max_size: 12` x a
+    # 6 292 571 B worst-case document is 151 MB of bulk buffers, roughly doubled
+    # while gzip runs, on top of `queue.disk.read_ahead: 32` events held in
+    # memory. A test stack capped at 400m OOM-kills the shipper on exactly the
+    # adversarial body AC-20 exists to send, and an OOM-killed Filebeat looks
+    # like "the document never arrived" — indistinguishable from the bug.
+    # Ordinary test traffic is ~2 KB/document and uses a small fraction of this;
+    # mem_limit is a cap, not a reservation.
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5066/stats >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  filebeat-data:

@@ -1,0 +1,490 @@
+# ---------------------------------------------------------------------------
+# Filebeat DaemonSet — one shipper per node (plan §4.3, default variant).
+#
+# Apply order matters and is not negotiable:
+#   1. infra/elasticsearch/bootstrap.py   (template FIRST — plan §10)
+#   2. this file
+#   3. the application pods
+# See infra/README.md.
+#
+# The ConfigMap is NOT inlined here on purpose. Create it from the single
+# source of truth so the two can never drift:
+#
+#   kubectl -n audit-logging create configmap filebeat-audit-config \
+#       --from-file=filebeat.yml=infra/filebeat/filebeat.yml \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#
+# Plan I-3 (is hostPath permitted in the RKE2 clusters?) is UNANSWERED. This
+# file assumes yes. If PodSecurity rejects it, the sidecar variant at the
+# bottom is a drop-in replacement and needs no change to the package or to
+# filebeat.yml beyond the input path.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: audit-logging
+  labels:
+    # hostPath + runAsUser 0 require the privileged PSA level. This label is
+    # the thing your platform team has to agree to (I-3).
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat-audit
+  namespace: audit-logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat-audit
+rules:
+  # Read-only, and only what Filebeat actually asks for. There is no
+  # autodiscover in filebeat.yml, so this is the floor, not a starting point.
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat-audit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: filebeat-audit
+subjects:
+  - kind: ServiceAccount
+    name: filebeat-audit
+    namespace: audit-logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: filebeat-audit
+  namespace: audit-logging
+rules:
+  # Leader-election lease, used if autodiscover is ever switched on. Harmless
+  # and namespaced; keeps that change from needing a cluster-scoped edit later.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: filebeat-audit
+  namespace: audit-logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: filebeat-audit
+subjects:
+  - kind: ServiceAccount
+    name: filebeat-audit
+    namespace: audit-logging
+---
+# Credentials. Create it out-of-band; never commit the values:
+#
+#   kubectl -n audit-logging create secret generic filebeat-audit-es \
+#       --from-literal=ES_HOSTS=https://elasticsearch.internal:9200 \
+#       --from-literal=ES_USERNAME=filebeat_writer \
+#       --from-literal=ES_PASSWORD='...'
+#
+# The role filebeat_writer needs, and nothing more:
+#   cluster:  monitor
+#   index  :  auto_configure, create_doc  on  logs-apiaudit.*-*
+#   index  :  auto_configure, create_doc, create_index  on  apiaudit-dead-letter*
+#             (output.elasticsearch.non_indexable_policy.dead_letter_index —
+#              without create_index the dead-letter write fails and a
+#              permanently rejected audit document is lost silently again)
+#
+# It must NOT have manage_index_templates or manage_ilm. This is not a style
+# note: bootstrap.py owns the template, and a Filebeat that can rewrite it can
+# put dynamic:true back and defeat AC-10 and the whole field bound. The role
+# definition is spelled out in infra/README.md §3, which is the page an
+# operator actually reads while applying this — do not let the two drift.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: filebeat-audit-es
+  namespace: audit-logging
+type: Opaque
+stringData:
+  ES_HOSTS: "https://elasticsearch.internal:9200"
+  ES_USERNAME: "filebeat_writer"
+  ES_PASSWORD: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat-audit
+  namespace: audit-logging
+  labels:
+    app.kubernetes.io/name: filebeat-audit
+    app.kubernetes.io/component: log-shipper
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: filebeat-audit
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: filebeat-audit
+      annotations:
+        # Restart the pods when the config changes. Update this by hand, or
+        # let your GitOps tool hash the ConfigMap into it.
+        audit-logging/config-revision: "1"
+    spec:
+      serviceAccountName: filebeat-audit
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: false
+      priorityClassName: system-node-critical
+      tolerations:
+        # A node whose logs are not shipped is a node with no audit trail.
+        # Ship from every node, including tainted control-plane nodes.
+        - operator: Exists
+      securityContext:
+        # root, deliberately. The audit files are written by application pods
+        # running as arbitrary UIDs; there is no single fsGroup that lets one
+        # reader see all of them. See the note under "hostPath permissions".
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: filebeat
+          # Air-gapped: this must already be in the internal registry.
+          # See infra/README.md step 1 for the import procedure.
+          # Pin by digest in production; the tag is here for readability.
+          image: registry.internal/beats/filebeat:8.13.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-e"                       # log to stderr
+            - "-c"
+            - "/etc/filebeat/filebeat.yml"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # data_stream.namespace for the quarantine route in filebeat.yml
+            # (logs-apiaudit.undecodable-<namespace>). Audit documents that
+            # decode carry their own namespace from AuditConfig.environment;
+            # this is only for lines that did not decode and therefore have no
+            # fields of their own. Set it to the same environment string the
+            # applications on this cluster use.
+            - name: AUDIT_NAMESPACE
+              value: "prod"
+            - name: ES_HOSTS
+              valueFrom:
+                secretKeyRef:
+                  name: filebeat-audit-es
+                  key: ES_HOSTS
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: filebeat-audit-es
+                  key: ES_USERNAME
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebeat-audit-es
+                  key: ES_PASSWORD
+          securityContext:
+            runAsUser: 0
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # Sized for the 50 rps row of plan §5 (see filebeat.yml), and
+            # re-derived after review S-12 showed 500Mi could not hold the
+            # bulk buffers a D-4-legal 1 MiB body produces. Arithmetic, worst
+            # case, all numbers from filebeat.yml's SIZING INVARIANTS block:
+            #
+            #   bulk buffers   worker 2 x bulk_max_size 12 x 6.29 MB =  151 MB
+            #   gzip staging   ~1x the bulk being compressed         =  151 MB
+            #   queue read_ahead 32 events x 6.29 MB                 =  201 MB
+            #   registry, harvesters, Go runtime                     =  ~80 MB
+            #                                                          -------
+            #                                                           583 MB
+            #
+            # 1Gi leaves ~44 % headroom on that. Typical traffic is ~2 KB per
+            # document, where the same arithmetic comes to ~85 MB, which is why
+            # requests stays well below limits.
+            #
+            # This is NOT a hard bound. read_ahead/write_ahead are counts of
+            # events, not bytes (elastic/beats#13740), so a sustained flood of
+            # adversarial 1 MiB bodies is bounded only by the application's
+            # AuditConfig.max_body_bytes. That knob, not this limit, is the
+            # lever if a service is attacked. Raise `worker` and memory
+            # together, never one alone.
+            requests:
+              cpu: "100m"
+              memory: "300Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/filebeat/filebeat.yml
+              subPath: filebeat.yml
+              readOnly: true
+            - name: certs
+              mountPath: /etc/filebeat/certs
+              readOnly: true
+            # THE audit log tree. read-only: Filebeat has no business writing
+            # into a directory whose whole purpose is being tamper-evident.
+            - name: audit-logs
+              mountPath: /var/log/audit
+              readOnly: true
+            # path.data — registry + disk queue. On a hostPath so that a
+            # Filebeat restart does not re-read every file from byte 0
+            # (plan R-11). Losing this means duplicates, which are dedupable
+            # after the fact — but NOT on trace.id alone. FR-23 reuses a
+            # client-supplied X-Request-ID, so trace.id is client-chosen and
+            # one client pinning one value makes every request it ever sends
+            # look like the same event (review N-12). The collapse key is
+            #   trace.id + @timestamp + host.hostname + process.pid
+            # and the query is in infra/README.md §6.
+            - name: filebeat-data
+              mountPath: /usr/share/filebeat/data
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /stats
+              port: 5066
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /stats
+              port: 5066
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: filebeat-audit-config
+            defaultMode: 0444
+        - name: certs
+          secret:
+            secretName: elasticsearch-ca
+            optional: true
+        - name: audit-logs
+          hostPath:
+            path: /var/log/audit
+            type: DirectoryOrCreate
+        - name: filebeat-data
+          hostPath:
+            path: /var/lib/filebeat-audit
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
+
+# ===========================================================================
+# THE OTHER HALF OF THE CONTRACT — what an application pod must do
+# ===========================================================================
+# The DaemonSet above reads /var/log/audit/<pod>/*.jsonl. Nothing produces
+# those files unless every audited application pod mounts the same hostPath
+# READ-WRITE under its own subdirectory.
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE COPYING THE BLOCK BELOW — review S-14
+# ---------------------------------------------------------------------------
+# The kubelet creates a subPath/subPathExpr directory itself, as root:root
+# mode 0755, and `fsGroup` is NOT applied to hostPath volumes. So a
+# runAsNonRoot application container gets EACCES from FileSink._ensure_open's
+# os.makedirs/os.open. That failure is quiet by design — start() catches
+# OSError, logs once, and the sink then runs forever writing to a file it
+# could not open. The observable result is an audit deployment that reports
+# healthy and produces ZERO documents, which is the worst failure this system
+# has. The earlier version of this file said only "the app container writes as
+# its own UID; Filebeat reads as root, so it can read anything", which is true
+# about the read side and says nothing about the write side.
+#
+# The fix is the initContainer below. It is not optional for a non-root app.
+# Verify it after rollout with README §7's one-liner, which is the only
+# evidence that the write side works.
+#
+#   spec:
+#     template:
+#       spec:
+#         securityContext:
+#           # Pin the UID. "an arbitrary UID" and "chown the directory to it"
+#           # are incompatible; the initContainer has to know what to chown to.
+#           runAsNonRoot: true
+#           runAsUser: 10001
+#           runAsGroup: 10001
+#           fsGroup: 10001          # no effect on hostPath; harmless, and it
+#                                   # covers any other volume the pod adds
+#         initContainers:
+#           # Creates and chowns /var/log/audit/<pod-name> on the node.
+#           # Mounting the volume with the SAME subPathExpr is what makes the
+#           # kubelet create the directory, at which point this container —
+#           # the only one in the pod running as root — can hand it to the app
+#           # UID. It exits in well under a second.
+#           - name: audit-log-dir
+#             image: registry.internal/busybox:1.36
+#             command:
+#               - sh
+#               - -c
+#               - 'chown 10001:10001 /mnt/audit && chmod 0700 /mnt/audit && ls -ld /mnt/audit'
+#             env:
+#               - name: POD_NAME
+#                 valueFrom:
+#                   fieldRef:
+#                     fieldPath: metadata.name
+#             securityContext:
+#               runAsUser: 0            # required: only root may chown
+#               runAsNonRoot: false
+#               allowPrivilegeEscalation: false
+#               readOnlyRootFilesystem: true
+#               capabilities:
+#                 drop: ["ALL"]
+#                 add: ["CHOWN"]        # the whole privilege it needs
+#             volumeMounts:
+#               - name: audit-logs
+#                 mountPath: /mnt/audit
+#                 subPathExpr: $(POD_NAME)
+#             resources:
+#               requests: { cpu: "10m", memory: "16Mi" }
+#               limits:   { cpu: "50m", memory: "32Mi" }
+#         containers:
+#           - name: api
+#             env:
+#               - name: POD_NAME
+#                 valueFrom:
+#                   fieldRef:
+#                     fieldPath: metadata.name
+#               # AuditConfig.log_dir (env prefix AUDIT_). Default is already
+#               # /var/log/audit, set explicitly so it is visible in the manifest.
+#               - name: AUDIT_LOG_DIR
+#                 value: /var/log/audit
+#             volumeMounts:
+#               - name: audit-logs
+#                 mountPath: /var/log/audit
+#                 # subPathExpr expands $(POD_NAME), so the container sees a
+#                 # private /var/log/audit that is really
+#                 # /var/log/audit/<pod-name> on the node. That is what makes
+#                 # the DaemonSet's /var/log/audit/*/*.jsonl glob work, and
+#                 # what keeps two pods on one node from colliding.
+#                 # (kubelet creates the subdirectory; k8s >= 1.17.)
+#                 subPathExpr: $(POD_NAME)
+#                 readOnly: false
+#         volumes:
+#           - name: audit-logs
+#             hostPath:
+#               path: /var/log/audit
+#               type: DirectoryOrCreate
+#
+# Node disk: file_max_bytes 256 MB x file_backup_count 8 = 2 GB per pod
+# (plan §5), x uvicorn workers if the pod runs more than one (FR-26 gives each
+# PID its own file). Size /var/log/audit accordingly, and make sure it is not
+# on the same filesystem as the kubelet's image store.
+#
+# If your app namespace enforces PodSecurity `restricted`, a root initContainer
+# is rejected and there are exactly three ways out, in order of preference:
+#
+#   1. Grant the app namespace `baseline` (root initContainers with CHOWN only
+#      are permitted there), or attach an exception for this one init step.
+#   2. Pre-create /var/log/audit/<pod-name> on every node with the app's UID,
+#      out of band, before the pod starts. Workable only for a StatefulSet or
+#      a pinned pod name; a Deployment's pod names change on every rollout, so
+#      this is a trap and is listed only for completeness.
+#   3. Use the sidecar variant below. It replaces hostPath with an emptyDir,
+#      which the kubelet DOES apply fsGroup to, so no chown is needed at all.
+#      Read its trade-offs; they are real.
+#
+# What does NOT work, so nobody has to rediscover it: `fsGroup` alone (not
+# applied to hostPath); chmod 1777 on the parent /var/log/audit (the kubelet
+# still creates the subPath dir as root:root 0755); and running the app as
+# root (defeats the point, and PSA baseline/restricted forbid it).
+#
+# Filebeat's own read side is unchanged and was never the problem: it runs as
+# root, so it reads files under any UID.
+#
+# ===========================================================================
+# SIDECAR VARIANT — for when hostPath is blocked (plan R-10 / I-3)
+# ===========================================================================
+# Trade-off: no hostPath permissions to negotiate, but N Filebeat instances
+# instead of one per node, N registries, and the buffer becomes the pod's
+# emptyDir instead of the node's disk — so an ES outage is bounded by the pod's
+# ephemeral storage, not by /var. Size `queue.disk.max_size` in the sidecar's
+# config DOWN accordingly (and the emptyDir sizeLimit UP), because an emptyDir
+# that fills gets the whole pod evicted, application container included. That
+# is the real cost of this variant: a logging failure can now take down the API.
+#
+# Everything above stays as it is except: delete the DaemonSet, the Namespace's
+# privileged label, and the audit-logs hostPath volume. Then, in EACH
+# application Deployment:
+#
+#   spec:
+#     template:
+#       spec:
+#         volumes:
+#           - name: audit-logs
+#             emptyDir:
+#               sizeLimit: 3Gi          # 2 GB of JSONL + queue headroom
+#           - name: filebeat-config
+#             configMap:
+#               name: filebeat-audit-config
+#           - name: filebeat-data
+#             emptyDir: {}              # registry dies with the pod; see below
+#         containers:
+#           - name: api
+#             env:
+#               - name: AUDIT_LOG_DIR
+#                 value: /var/log/audit/local
+#             volumeMounts:
+#               - name: audit-logs
+#                 mountPath: /var/log/audit
+#
+#           - name: filebeat
+#             image: registry.internal/beats/filebeat:8.13.4
+#             args: ["-e", "-c", "/etc/filebeat/filebeat.yml"]
+#             env:
+#               - name: ES_HOSTS
+#                 valueFrom: { secretKeyRef: { name: filebeat-audit-es, key: ES_HOSTS } }
+#               - name: ES_USERNAME
+#                 valueFrom: { secretKeyRef: { name: filebeat-audit-es, key: ES_USERNAME } }
+#               - name: ES_PASSWORD
+#                 valueFrom: { secretKeyRef: { name: filebeat-audit-es, key: ES_PASSWORD } }
+#             securityContext:
+#               runAsNonRoot: true
+#               runAsUser: 1000          # same UID as the app, or a shared fsGroup
+#               allowPrivilegeEscalation: false
+#               readOnlyRootFilesystem: true
+#               capabilities: { drop: ["ALL"] }
+#             resources:
+#               requests: { cpu: "50m",  memory: "150Mi" }
+#               limits:   { cpu: "300m", memory: "300Mi" }
+#             volumeMounts:
+#               - name: audit-logs
+#                 mountPath: /var/log/audit
+#                 readOnly: true
+#               - name: filebeat-config
+#                 mountPath: /etc/filebeat/filebeat.yml
+#                 subPath: filebeat.yml
+#                 readOnly: true
+#               - name: filebeat-data
+#                 mountPath: /usr/share/filebeat/data
+#
+# The one config change: the app writes to /var/log/audit/local (one level
+# down) so that the existing input glob /var/log/audit/*/*.jsonl still matches
+# with no edit to filebeat.yml. Keep it that way — one config file, two
+# topologies.
+#
+# R-11 is worse here: filebeat-data is an emptyDir, so the registry dies with
+# the pod and a restarted sidecar re-reads whatever JSONL survived in the
+# emptyDir — which is nothing, because the emptyDir died too. The window is
+# therefore "lines written but not yet acked when the pod died", and they are
+# lost rather than duplicated. If that is unacceptable, this variant is not
+# acceptable either, and I-3 has to be answered in favour of hostPath.

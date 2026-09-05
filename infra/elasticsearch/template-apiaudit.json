@@ -1,0 +1,328 @@
+{
+  "index_patterns": [
+    "logs-apiaudit.*-*"
+  ],
+  "priority": 500,
+  "data_stream": {
+    "hidden": false,
+    "allow_custom_routing": false
+  },
+  "composed_of": [],
+  "_meta": {
+    "package": "audit_logging",
+    "owner": "A5 \u2014 infrastructure",
+    "schema": "docs/schema.md (frozen, Phase 0 exit)",
+    "description": "API request audit documents. Monolithic on purpose: composed_of is empty so that no built-in or operator-supplied component template (logs@settings, logs@mappings, *@custom) can merge in a dynamic:true mapping. Everything this data stream is mapped by is in this one file.",
+    "field_budget": "45 leaf fields per docs/schema.md \u00a73, plus object containers and 'labels'; total_fields.limit is 200 (AC-10)",
+    "ilm_policy": "apiaudit-ilm",
+    "managed_by": "infra/elasticsearch/bootstrap.py"
+  },
+  "template": {
+    "settings": {
+      "index": {
+        "codec": "best_compression",
+        "number_of_shards": 1,
+        "number_of_replicas": 1,
+        "refresh_interval": "10s",
+        "lifecycle": {
+          "name": "apiaudit-ilm"
+        },
+        "mapping": {
+          "total_fields": {
+            "limit": 200
+          },
+          "depth_limit": 20,
+          "ignore_malformed": true
+        },
+        "query": {
+          "default_field": [
+            "audit.route",
+            "url.path",
+            "error.message"
+          ]
+        }
+      }
+    },
+    "mappings": {
+      "_meta": {
+        "schema_version": "1.0.0",
+        "source": "docs/schema.md \u00a72"
+      },
+      "_source": {
+        "enabled": true
+      },
+      "dynamic": false,
+      "date_detection": false,
+      "numeric_detection": false,
+      "properties": {
+        "@timestamp": {
+          "type": "date",
+          "format": "strict_date_optional_time_nanos||strict_date_optional_time||epoch_millis"
+        },
+        "data_stream": {
+          "dynamic": false,
+          "properties": {
+            "type": {
+              "type": "constant_keyword",
+              "value": "logs"
+            },
+            "dataset": {
+              "type": "constant_keyword"
+            },
+            "namespace": {
+              "type": "constant_keyword"
+            }
+          }
+        },
+        "event": {
+          "dynamic": false,
+          "properties": {
+            "kind": {
+              "type": "constant_keyword",
+              "value": "event"
+            },
+            "category": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "type": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "action": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "duration": {
+              "type": "long",
+              "meta": {
+                "unit": "nanos"
+              }
+            },
+            "outcome": {
+              "type": "keyword",
+              "ignore_above": 32
+            }
+          }
+        },
+        "trace": {
+          "dynamic": false,
+          "properties": {
+            "id": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "service": {
+          "dynamic": false,
+          "properties": {
+            "name": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "version": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "environment": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "host": {
+          "dynamic": false,
+          "properties": {
+            "hostname": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "process": {
+          "dynamic": false,
+          "properties": {
+            "pid": {
+              "type": "long"
+            }
+          }
+        },
+        "client": {
+          "dynamic": false,
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "port": {
+              "type": "long"
+            }
+          }
+        },
+        "user_agent": {
+          "dynamic": false,
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        },
+        "url": {
+          "dynamic": false,
+          "properties": {
+            "path": {
+              "type": "keyword",
+              "ignore_above": 2048
+            },
+            "query": {
+              "type": "keyword",
+              "ignore_above": 4096
+            }
+          }
+        },
+        "http": {
+          "dynamic": false,
+          "properties": {
+            "version": {
+              "type": "keyword",
+              "ignore_above": 16
+            },
+            "request": {
+              "dynamic": false,
+              "properties": {
+                "method": {
+                  "type": "keyword",
+                  "ignore_above": 32
+                },
+                "bytes": {
+                  "type": "long"
+                },
+                "mime_type": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "response": {
+              "dynamic": false,
+              "properties": {
+                "status_code": {
+                  "type": "long"
+                },
+                "bytes": {
+                  "type": "long"
+                }
+              }
+            }
+          }
+        },
+        "user": {
+          "dynamic": false,
+          "properties": {
+            "id": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "name": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "roles": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "error": {
+          "dynamic": false,
+          "properties": {
+            "type": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "message": {
+              "type": "text",
+              "norms": false
+            }
+          }
+        },
+        "audit": {
+          "dynamic": false,
+          "properties": {
+            "route": {
+              "type": "keyword",
+              "ignore_above": 1024
+            },
+            "path_params": {
+              "type": "flattened",
+              "depth_limit": 25,
+              "ignore_above": 1024
+            },
+            "request": {
+              "dynamic": false,
+              "properties": {
+                "headers": {
+                  "type": "flattened",
+                  "depth_limit": 25,
+                  "ignore_above": 1024
+                },
+                "query": {
+                  "type": "flattened",
+                  "depth_limit": 25,
+                  "ignore_above": 1024
+                },
+                "body": {
+                  "type": "flattened",
+                  "depth_limit": 25,
+                  "ignore_above": 1024
+                },
+                "body_raw": {
+                  "type": "keyword",
+                  "index": false,
+                  "doc_values": false
+                },
+                "body_bytes": {
+                  "type": "long"
+                },
+                "body_truncated": {
+                  "type": "boolean"
+                },
+                "body_parse_failed": {
+                  "type": "boolean"
+                },
+                "body_skipped": {
+                  "type": "keyword",
+                  "ignore_above": 32
+                },
+                "multipart": {
+                  "type": "flattened",
+                  "depth_limit": 25,
+                  "ignore_above": 1024
+                },
+                "query_skipped": {
+                  "type": "keyword",
+                  "ignore_above": 32
+                }
+              }
+            },
+            "response": {
+              "dynamic": false,
+              "properties": {
+                "headers": {
+                  "type": "flattened",
+                  "depth_limit": 25,
+                  "ignore_above": 1024
+                }
+              }
+            }
+          }
+        },
+        "labels": {
+          "dynamic": false,
+          "properties": {}
+        }
+      }
+    }
+  }
+}

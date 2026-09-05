@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# audit_logging specific
+# ---------------------------------------------------------------------------
+
+# This package writes JSONL audit logs containing real request bodies from
+# whatever service produced them. They must never be committed.
+*.jsonl
+*.jsonl.[0-9]*
+/var/log/audit/
+
+# Benchmark output
+.benchmarks/
