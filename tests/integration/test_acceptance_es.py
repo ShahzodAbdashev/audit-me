@@ -942,7 +942,15 @@ async def test_AC_11_kill_switch_produces_no_document_and_no_file(
 
     # A different, *enabled* app provides the marker that makes the absence
     # above mean something.
-    live = await stack()
+    #
+    # `enabled=True` must be passed EXPLICITLY. `AuditConfig` is a
+    # pydantic-settings model with env_prefix="AUDIT_", so any field the
+    # factory does not pass is read from the environment — and this test has
+    # just monkeypatched `AUDIT_ENABLED=false`. Without this the control app
+    # is silently disabled too, its marker never arrives, and the test fails
+    # reporting a broken pipeline when the pipeline is fine. An init kwarg
+    # takes precedence over the environment, which is what makes this work.
+    live = await stack(service_name="control-api", enabled=True)
     marker = trace()
     await live.get("/items/1", marker)
     await live.sink.flush()
@@ -1406,7 +1414,21 @@ def test_AC_21_the_uncoerced_shape_really_is_rejected_by_elasticsearch(
         "Elasticsearch accepted an object in user.roles. If this ever passes, "
         "review M-5 and tests/integration/_es_double.py both need revisiting."
     )
-    assert "mapper_parsing_exception" in response.text or "illegal_argument" in response.text
+    # Real Elasticsearch 8.13 answers `document_parsing_exception` here, not
+    # `mapper_parsing_exception`. This assertion was written against the
+    # in-process double's vocabulary and had never been run against a cluster;
+    # the *behaviour* was right all along (the document is rejected, which is
+    # what M-5 is about) and only the expected string was wrong. Accept the
+    # family, and assert on the field name, which is what actually matters.
+    assert any(
+        marker in response.text
+        for marker in (
+            "document_parsing_exception",  # ES 8.13+
+            "mapper_parsing_exception",  # older, and what the double emits
+            "illegal_argument",
+        )
+    ), response.text
+    assert "user.roles" in response.text, "the rejection must name the offending field"
 
 
 def test_AC_21_a_flattened_key_over_the_lucene_term_limit_is_rejected(

@@ -332,7 +332,27 @@ class IndexTemplate:
 
     @property
     def index_depth_limit(self) -> int:
-        return int(self.index_settings["mapping"]["depth_limit"])
+        """``index.mapping.depth.limit`` — note the nesting.
+
+        This used to read ``mapping["depth_limit"]``, matching the template,
+        and both were wrong in the same way: Elasticsearch spells the *index
+        setting* ``index.mapping.depth.limit`` and rejects the flat form with
+        ``unknown setting [index.mapping.depth_limit]``. ``depth_limit`` is
+        correct only as a ``flattened`` **field** parameter, which is almost
+        certainly how the two got confused.
+
+        Because the double agreed with the template, Tier 2 stayed green while
+        a real cluster refused the template outright — and the data stream was
+        then created with a dynamic mapping, the one-way door D-11 exists to
+        prevent. A double that shares the config's assumption cannot test it;
+        this reads the real shape and falls back only to keep an older
+        template loadable.
+        """
+        mapping = self.index_settings["mapping"]
+        depth = mapping.get("depth")
+        if isinstance(depth, dict):
+            return int(depth["limit"])
+        return int(mapping["depth_limit"])
 
     @property
     def index_patterns(self) -> list[str]:

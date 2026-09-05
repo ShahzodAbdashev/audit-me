@@ -196,8 +196,17 @@ processors:
 # ---------------------------------------------------------------------------
 output.elasticsearch:
   hosts: ["${ES_HOSTS:https://elasticsearch.internal:9200}"]
-  username: "${ES_USERNAME}"
-  password: "${ES_PASSWORD}"
+  # The `:` supplies an EMPTY default. Without it Filebeat 8.13 rejects an
+  # unset *or empty* variable with "missing field accessing
+  # 'output.elasticsearch.username'" and exits(1) at startup — it does not
+  # fall back to anonymous. Found by actually starting the shipper: the YAML
+  # parses cleanly either way, so config validation never caught it.
+  #
+  # The failure mode is the bad one: the API pods keep serving and keep
+  # writing JSONL, the files pile up on the node, and nothing ships. There is
+  # no counter on the package side for "my shipper is dead".
+  username: "${ES_USERNAME:}"
+  password: "${ES_PASSWORD:}"
   ssl.certificate_authorities: ["/etc/filebeat/certs/ca.crt"]
   ssl.verification_mode: full
 

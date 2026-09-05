@@ -31,8 +31,10 @@
           "total_fields": {
             "limit": 200
           },
-          "depth_limit": 20,
-          "ignore_malformed": true
+          "ignore_malformed": true,
+          "depth": {
+            "limit": 20
+          }
         },
         "query": {
           "default_field": [

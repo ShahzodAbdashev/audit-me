@@ -50,6 +50,11 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"; chmod 777 "$LOG_DIR"
 echo "log dir: $LOG_DIR"
 
 step "Starting Elasticsearch + Filebeat"
+# The compose file mounts $AUDIT_TEST_LOG_DIR at /var/log/audit/testpod, which
+# is the pod-name level the production glob (/var/log/audit/*/*.jsonl) expects.
+# Without this the shipper starts fine and watches an empty directory, which
+# looks exactly like "the package wrote nothing".
+export AUDIT_TEST_LOG_DIR="$LOG_DIR"
 docker compose -f "$COMPOSE" up -d --wait 2>&1 | tail -5 || {
   docker compose -f "$COMPOSE" up -d 2>&1 | tail -20; }
 
@@ -65,12 +70,33 @@ done
 step "Installing the index template and ILM policy (D-11: BEFORE any write)"
 # A data stream created before its template gets a dynamic mapping and cannot
 # be fixed without a reindex — plan §10 is emphatic about the ordering.
-curl -sS -XPUT "http://127.0.0.1:9200/_ilm/policy/apiaudit" \
-  -H 'Content-Type: application/json' \
-  --data-binary "@infra/elasticsearch/ilm-apiaudit.json" -o /dev/null -w 'ilm: %{http_code}\n'
-curl -sS -XPUT "http://127.0.0.1:9200/_index_template/apiaudit" \
-  -H 'Content-Type: application/json' \
-  --data-binary "@infra/elasticsearch/template-apiaudit.json" -o /dev/null -w 'template: %{http_code}\n'
+# These MUST hard-fail. An earlier version printed the status code and carried
+# on; the template PUT was returning 400 (a misspelled index setting) and the
+# data stream was then auto-created with a DYNAMIC mapping. Everything
+# downstream still looked green — documents indexed, the field count was
+# comfortably under 200 — because a small demo does not generate enough
+# distinct fields to notice. That is D-11's one-way door, and it is only
+# fixable by a reindex.
+put_or_die() { # url file label
+  code=$(curl -sS -XPUT "$1" -H 'Content-Type: application/json' \
+         --data-binary "@$2" -o /tmp/audit-put-$3.json -w '%{http_code}')
+  if [ "$code" != "200" ]; then
+    fail "$3 install returned HTTP $code"; head -c 500 /tmp/audit-put-$3.json; echo; exit 1
+  fi
+  echo "$3: $code"
+}
+# The ILM API accepts only the "policy" key and rejects the file's _meta
+# envelope outright. demo/ilm_body.py strips it and resolves the retention
+# knob into the delete phase, exactly as bootstrap.py does.
+"$PY" demo/ilm_body.py > /tmp/audit-ilm-body.json || { fail "could not build the ILM body"; exit 1; }
+# Canonical names, taken from infra/elasticsearch/bootstrap.py — NOT invented
+# here. The template's settings.index.lifecycle.name points at
+# "apiaudit-ilm", so a policy installed under any other name silently
+# never attaches; and the template must be "logs-apiaudit" or it collides
+# with the one the Tier 1 suite installs (same patterns, same priority,
+# which Elasticsearch rejects outright).
+put_or_die "http://127.0.0.1:9200/_ilm/policy/apiaudit-ilm" /tmp/audit-ilm-body.json ilm
+put_or_die "http://127.0.0.1:9200/_index_template/logs-apiaudit" infra/elasticsearch/template-apiaudit.json template
 
 step "Starting the FastAPI service (real uvicorn, real socket)"
 AUDIT_LOG_DIR="$LOG_DIR" AUDIT_ENVIRONMENT=demo \
@@ -83,6 +109,16 @@ done
 
 step "Sending traffic"
 "$PY" demo/traffic.py send || { fail "traffic generator errored"; exit 1; }
+
+step "Waiting for the sink to flush"
+# The sink batches: it flushes on an interval or when the queue passes a size
+# threshold, whichever comes first. Checking the file the instant the last
+# response returns is a race against that interval, not a test of anything.
+for i in $(seq 1 30); do
+  lines=$(cat "$LOG_DIR"/*.jsonl 2>/dev/null | wc -l)
+  [ "${lines:-0}" -ge 12 ] && { echo "$lines lines on disk after ${i}s"; break; }
+  sleep 1
+done
 
 step "Verifying the JSONL on disk (before Elasticsearch is involved)"
 # If this fails, the problem is the package. If it passes and the ES check

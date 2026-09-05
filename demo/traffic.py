@@ -259,6 +259,19 @@ def verify(expected_min: int, log_dir: str | None = None) -> int:
         fields = count(index.get("mappings", {}).get("properties", {}))
     check(f"field count within the 200 limit (got {fields})", 0 < fields <= 200)
 
+    # A field count under the limit means nothing on its own: a dynamic mapping
+    # is also under the limit until enough distinct shapes arrive. What matters
+    # is that the index took OUR template. Assert dynamic:false is actually in
+    # force — the D-11 failure is silent and unfixable without a reindex.
+    raw = next(iter(mapping.values()), {}).get("mappings", {})
+    check("mapping is dynamic:false — the template really is in force (D-11)",
+          str(raw.get("dynamic", "")).lower() == "false",
+          f"dynamic={raw.get('dynamic')!r} — the data stream was auto-created "
+          "with a dynamic mapping; the template did not apply")
+    check("mapping carries our constant_keyword dataset pin",
+          raw.get("properties", {}).get("data_stream", {})
+             .get("properties", {}).get("dataset", {}).get("type") == "constant_keyword")
+
     # dynamic:false actually enforced by ES, not just declared in the template.
     stats = _es("/logs-apiaudit.undecodable-*/_count")
     check("no undecodable lines quarantined", stats.get("count", 0) == 0,
