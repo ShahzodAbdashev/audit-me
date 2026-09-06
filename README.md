@@ -20,6 +20,9 @@ FastAPI ─▶ middleware ─▶ file ─▶ Filebeat ─▶ Elasticsearch
 pip install "audit-me[elasticsearch]"
 ```
 
+> Installed as **`audit-me`**, imported as **`audit_logging`**. The import name
+> was fixed before `audit-logging` turned out to be taken on PyPI.
+
 ```python
 from audit_logging import AuditConfig, AuditMiddleware
 
@@ -65,14 +68,21 @@ until the field count explodes and is fixable only by a reindex.
 ### Using Filebeat instead
 
 If you already run Filebeat, leave `AUDIT_ELASTICSEARCH_URL` unset and no HTTP
-client is even imported. Point Filebeat at `AUDIT_LOG_DIR`; `infra/filebeat/`
-has a working config and a Kubernetes DaemonSet, and
-`infra/elasticsearch/bootstrap.py` installs the template:
+client is even imported. Point Filebeat at `AUDIT_LOG_DIR`.
+
+The Filebeat config, the Kubernetes DaemonSet and the template installer live
+in the [repository](https://github.com/ShahzodAbdashev/audit-me) under
+`infra/` — they are deployment files, not Python, so they are not in the wheel:
 
 ```bash
+git clone https://github.com/ShahzodAbdashev/audit-me
 ES_URL=https://your-cluster:9200 ES_USERNAME=elastic ES_PASSWORD=... \
-  python infra/elasticsearch/bootstrap.py
+  python audit-me/infra/elasticsearch/bootstrap.py
 ```
+
+The exact same template is bundled in the package as
+`audit_logging.templates.INDEX_TEMPLATE`, and a test asserts the two never
+drift — so you can also install it from Python if that is easier.
 
 On Kubernetes, mount the log directory into your app pod:
 
@@ -178,27 +188,37 @@ doesn't depend on your auth layer behaving.
 ## Check it's working
 
 ```bash
-python demo/query.py             # counts per service
-python demo/query.py recent 10   # last 10 requests
-python demo/query.py mapping     # must say dynamic: 'false'
-python demo/query.py leaks hunter2   # a real secret must return 0
+python -m audit_logging.check
+python -m audit_logging.check --leak "a-real-secret"
 ```
 
-`mapping` is the important one. If it doesn't say `dynamic: 'false'`, the
-template didn't install and you need to fix that before the index grows.
+It reads the same `AUDIT_*` environment your app uses, so it checks what you
+actually deployed:
 
-**Try the whole thing locally** (needs Docker) — starts Elasticsearch and
-Filebeat, runs a real API, and checks what arrives:
+```
+  ok    1 file(s) on disk, 4 record(s) written
+  ok    elasticsearch reachable, cluster is yellow
+  ok    4 document(s) indexed
+  ok    mapping is dynamic:false — the template is in force (46 fields)
+  ok    'topsecret' appears in no document
+```
+
+**The mapping line is the one that matters.** Documents arriving proves very
+little: an index created without the template accepts them happily, and the
+field count looks fine right up until it doesn't. If it says anything other
+than `dynamic:false`, fix that before the index grows — only a reindex will
+afterwards.
+
+Exit code is non-zero on failure, so this works as a deployment smoke test.
+
+**Try the whole thing locally** — clone the repository (these scripts are not
+in the wheel) and run, with Docker available:
 
 ```bash
-./demo/run_e2e.sh --keep
+git clone https://github.com/ShahzodAbdashev/audit-me && cd audit-me
+./demo/run_e2e.sh --keep     # Elasticsearch + Filebeat + a real API, end to end
 python demo/query.py recent 10
-```
-
-Browser UI at <http://localhost:5601>:
-
-```bash
-docker compose -f demo/docker-compose.kibana.yml up -d
+docker compose -f demo/docker-compose.kibana.yml up -d   # browser UI on :5601
 python demo/kibana_setup.py
 ```
 
