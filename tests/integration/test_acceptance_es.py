@@ -840,6 +840,22 @@ async def test_AC_10_fifty_endpoints_two_hundred_requests_stay_under_the_bound(
     es: Elasticsearch, stack_log_dir: Path, namespace: str
 ) -> None:
     """50 endpoints x 200 requests, then ask Elasticsearch how many fields it has."""
+
+    def index_failed() -> int:
+        """Cluster-wide count of rejected index operations, since node start."""
+        stats = es.json("GET", "/_nodes/stats/indices/indexing")
+        return sum(
+            n["indices"]["indexing"]["index_failed"] for n in stats["nodes"].values()
+        )
+
+    # Snapshot, because this counter is CUMULATIVE and CLUSTER-WIDE. AC-21
+    # deliberately sends documents Elasticsearch must reject, so the absolute
+    # value is non-zero as soon as that test has run once against this cluster
+    # — including in an earlier session. Asserting `== 0` made this test fail
+    # for rejections it did not cause, and only in the order-dependent case
+    # where something else ran first.
+    failed_before = index_failed()
+
     endpoints, per_endpoint = 50, 200
     config = AuditConfig(
         service_name="wide-api",
@@ -899,10 +915,11 @@ async def test_AC_10_fifty_endpoints_two_hundred_requests_stay_under_the_bound(
     for index_name, body in mapping.items():
         assert body["mappings"]["dynamic"] == "false", f"{index_name} is not dynamic:false"
 
-    # Nothing was rejected on the way in.
-    stats = es.json("GET", "/_nodes/stats/indices/indexing")
-    for node in stats["nodes"].values():
-        assert node["indices"]["indexing"]["index_failed"] == 0, "Elasticsearch rejected writes"
+    # Nothing *this test* wrote was rejected. A delta, not an absolute.
+    assert index_failed() == failed_before, (
+        f"Elasticsearch rejected {index_failed() - failed_before} write(s) during "
+        "this test — a document did not fit the mapping"
+    )
 
     print(f"\nAC-10 (Tier 1): {expected} documents -> {field_count} fields in _field_caps")
 

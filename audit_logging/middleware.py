@@ -476,9 +476,35 @@ class AuditMiddleware:
             self._oops("sink.submit() failed", exc)
 
 
+#: Exceptions that mean *the connection went away*, not *the application
+#: failed* (FR-34, review N-2).
+#:
+#: Without this, a TCP reset and — far more often — the ``CancelledError`` that
+#: every in-flight request receives during a graceful shutdown are recorded as
+#: ``event.outcome: "failure"`` with ``error.type: CancelledError``. A rolling
+#: deploy therefore writes a burst of failures into the audit index on every
+#: release, and anyone alerting on the failure rate is paged by their own
+#: deploys. The distinction matters precisely because `outcome` is what
+#: dashboards and alerts key on.
+#:
+#: ``CancelledError`` is a ``BaseException``; it is only *classified* here and
+#: is still re-raised unchanged, because swallowing it would break task
+#: cancellation for the whole application.
+_TRANSPORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    asyncio.CancelledError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
+)
+
+
 def _outcome(ctx: RequestContext, saw_disconnect: bool) -> str:
     # ``ended_ns`` is still None here unless the final response chunk was seen.
     if saw_disconnect and ctx.ended_ns is None:
+        return OUTCOME_DISCONNECTED
+    if isinstance(ctx.exc, _TRANSPORT_EXCEPTIONS):
+        # The client or the runtime went away mid-request. Nothing in the
+        # application failed, so this must not read as a failure.
         return OUTCOME_DISCONNECTED
     if ctx.exc is not None:
         return OUTCOME_FAILURE

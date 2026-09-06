@@ -22,11 +22,37 @@
 # if you change AuditConfig.max_body_bytes (default 1 MiB, D-4).
 #
 #   B  = max_body_bytes                                   = 1 048 576 B
-#   L  = worst-case JSONL line                            = 6 x B + envelope
-#   M  = message_max_bytes        >= 1.3 x L              = 8 MiB
+#   L  = worst-case JSONL line                            = 1.0 x B + envelope
+#   M  = message_max_bytes        >= 1.3 x L              = 8 MiB (8x headroom)
 #   S  = queue.disk.segment_size  >= 2 x M                = 100 MB (prod)
 #   Q  = queue.disk.max_size      >= 2 x S                = 2200 MB
-#   N  = bulk_max_size            <= 0.75 x 100 MB / L    = 12 documents
+#   N  = bulk_max_size            <= 0.50 x 100 MB / L    = 48 documents
+#
+# L WAS 6 x B, AND THAT IS NO LONGER REACHABLE. The 6x came from the JSON
+# parse-failure path keeping 1 MiB of control characters verbatim, each
+# escaping to a 6-byte \uXXXX. DEV-2 then clipped that path to 4096
+# characters, so it now yields an ~8.9 KiB line. Re-measured against the real
+# serialiser after the clip:
+#
+#   1 MiB body of ...                     JSONL line     x B
+#   one long string value                  1 049 423     1.00   <-- the ceiling
+#   one string of quotes                   1 049 423     1.00
+#   one string of newlines                 1 049 423     1.00
+#   unparseable (clipped by DEV-2)             9 112     0.01
+#   at the node cap (FR-29 refuses more)      34 493     0.03
+#   typical 2 KB JSON body                     1 229     ~0
+#
+# The ceiling is a body that PARSES and is one long string: few nodes, few
+# distinct keys, so FR-29 and FR-32 both wave it through, and it is stored
+# once at its full size. 1.00 x B, not 6 x B.
+#
+# Consequences, both of which were left un-taken until this was measured:
+#   * M stays at 8 MiB. It is now 8x headroom rather than 1.3x, and headroom is
+#     cheap; it also absorbs a service that raises max_body_bytes.
+#   * N rises 12 -> 48. The old 12 was derived from the dead 6x figure and cost
+#     a 4x reduction in shipper throughput for nothing. 48 x 1.05 MB = 50 MB,
+#     half of Elasticsearch's http.max_content_length default, and 48 x 1.2 KB
+#     = 58 KB for the typical traffic that actually dominates.
 #
 # Where L comes from (recomputed after docs/schema.md §2.9 made
 # audit.request.body and audit.request.body_raw mutually exclusive, so a body
@@ -232,10 +258,10 @@ output.elasticsearch:
   # Typical traffic is ~2 KB/document, so a full bulk is normally ~24 KB and
   # the count is the binding constraint, not the bytes. If you lower
   # AuditConfig.max_body_bytes, raise this proportionally; the invariant is
-  #     bulk_max_size x 6 x max_body_bytes  <  0.75 x http.max_content_length
+  #     bulk_max_size x 1 x max_body_bytes  <  0.50 x http.max_content_length
   # Filebeat 8.13 has no byte-based bulk limit (elastic/beats#3688), so the
   # count is the only lever.
-  bulk_max_size: 12
+  bulk_max_size: 48
 
   # 2 workers x 12 documents x 6.29 MB = 151 MB of worst-case bulk buffers,
   # roughly doubled while gzip runs. That is why the DaemonSet's memory limit

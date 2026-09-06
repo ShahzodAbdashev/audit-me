@@ -989,7 +989,12 @@ def build_document(
     if user is not None:
         doc["user"] = user
 
-    if ctx.exc is not None and ctx.outcome == OUTCOME_FAILURE:
+    # Emitted for a *disconnect* as well as a failure (FR-34). `error.type` is
+    # what separates "clients are resetting" from "our own rolling deploy is
+    # cancelling in-flight requests", and suppressing it for disconnects
+    # removes precisely the signal an operator needs. Both fields are already
+    # mapped, so this costs no mapping entry.
+    if ctx.exc is not None:
         doc["error"] = {
             "type": type(ctx.exc).__name__,
             "message": str(ctx.exc)[:_MAX_ERROR_MESSAGE],

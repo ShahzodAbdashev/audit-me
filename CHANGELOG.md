@@ -220,17 +220,14 @@ prominence of `url.path` — a secret in a URL path is not merely stored, it is
 
 ### Known open defects
 
-* **D-A6-5** — `FileSink._rotate` races the sink's lazy `start()`. About one run
-  in three, a rotating sink ends with a **gap in the `.N` numbering** and one
-  file at ~2× `file_max_bytes`. **No lines are lost.** It is an FR-22 bound
-  violation, so size node disk with headroom rather than at exactly
-  `file_max_bytes` × (`file_backup_count` + 1). Mechanism and repro:
-  `tests/AC-matrix.md` §7.
-* **N-2** — a TCP reset or a shutdown-cancelled request records
-  `event.outcome: "failure"` with `error.type: ConnectionResetError` /
-  `CancelledError`, rather than `"disconnected"`. During a rolling deploy every
-  in-flight request becomes a `failure` in the index. Exactly one document is
-  still emitted.
+* **D-A6-5 — FIXED.** `FileSink._rotate` raced the sink's lazy `start()`, leaving
+  a gap in the `.N` numbering and one file at ~2x `file_max_bytes`. The whole
+  close/rename/reopen is now one step under the same lock as the open, with a
+  deterministic regression test that fails 5/5 against the unfixed code.
+* **N-2 — FIXED (FR-34).** A TCP reset or a shutdown cancellation is now
+  `event.outcome: "disconnected"`, not `"failure"`, so a rolling deploy no
+  longer writes a burst of failures into the index. `error.type` is still
+  recorded, which is what tells a deploy apart from a client giving up.
 * **N-12** — `trace.id` is client-chosen when the client sends `X-Request-ID`.
   Deduplicate on `trace.id` + `host.hostname` + `process.pid` + `@timestamp`,
   never on `trace.id` alone (`infra/README.md` §6.4).

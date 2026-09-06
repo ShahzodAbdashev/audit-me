@@ -126,12 +126,14 @@ Filebeat routes on these three (plan §4.3). They are `constant_keyword` per ind
 
 The block is absent entirely when there is no resolver, it returns `None`, or it raises. Keys the resolver returns that are not `id`/`name`/`roles` are dropped — `user.*` is not `dynamic`.
 
-### 2.6 Error (present only on failure)
+### 2.6 Error (present when an exception ended the request)
 
 | Field | Type | E/C | Agent | Notes |
 |---|---|---|---|---|
 | `error.type` | `keyword` | E | A2 | Exception class name |
 | `error.message` | `text` | E | A2 | `str(exc)`, truncated to 1024 chars |
+
+Present for `event.outcome` of **`failure` and `disconnected`** alike. A disconnect caused by `CancelledError` (a rolling deploy) and one caused by `ConnectionResetError` (a client giving up) are operationally different problems, and `error.type` is the only thing that tells them apart.
 
 **No stack trace.** It is the application's job to log its own tracebacks; a trace here would blow the field budget and duplicate the app log.
 

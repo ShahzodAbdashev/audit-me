@@ -12,6 +12,7 @@ where it is not (chunk boundaries, client disconnect, scope pass-through).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import tracemalloc
@@ -1717,3 +1718,81 @@ async def test_LIMITATION_client_ip_is_the_transport_peer_not_x_forwarded_for(
     doc = sink.only
     assert doc["client"]["ip"] != "203.0.113.9", "the header must not win"
     assert doc["audit"]["request"]["headers"]["x-forwarded-for"] == "203.0.113.9"
+
+
+# ---------------------------------------------------------------------------
+# FR-34 (review N-2) — a lost connection is not an application failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(asyncio.CancelledError(), id="shutdown-cancellation"),
+        pytest.param(ConnectionResetError("reset"), id="tcp-reset"),
+        pytest.param(BrokenPipeError("broken pipe"), id="broken-pipe"),
+        pytest.param(ConnectionAbortedError("aborted"), id="aborted"),
+    ],
+)
+async def test_FR_34_a_lost_connection_is_disconnected_not_failure(
+    exc: BaseException,
+) -> None:
+    """`event.outcome` drives dashboards and alerts, so this is not cosmetic.
+
+    Every in-flight request receives `CancelledError` during a graceful
+    shutdown. Classified as `failure`, a rolling deploy writes a burst of
+    failures into the audit index on every release and pages whoever alerts on
+    the failure rate — with their own deploy.
+    """
+    sink = NullSink()
+    metrics = StubMetrics()
+    app = FastAPI()
+
+    @app.get("/vanish")
+    async def vanish() -> None:
+        raise exc
+
+    app.add_middleware(AuditMiddleware, config=build_config(), sink=sink, metrics=metrics)
+
+    async with client_for(app) as client:
+        with contextlib.suppress(BaseException):
+            await client.get("/vanish")
+
+    doc = sink.only
+    assert doc["event"]["outcome"] == "disconnected"
+    assert doc["error"]["type"] == type(exc).__name__, "the cause is still recorded"
+
+
+async def test_FR_34_a_real_application_error_is_still_a_failure() -> None:
+    """The other direction, so the fix cannot swallow genuine failures."""
+    sink = NullSink()
+    app, _ = wrap(build_config(), sink)
+
+    async with client_for(app) as client:
+        with contextlib.suppress(BaseException):
+            await client.get("/boom")
+
+    doc = sink.only
+    assert doc["event"]["outcome"] == "failure"
+    assert doc["error"]["type"] == "ValueError"
+
+
+async def test_FR_34_cancellation_still_propagates_to_the_application() -> None:
+    """`CancelledError` is a `BaseException` and is only *classified* here.
+
+    Swallowing it would break task cancellation for the whole application, so
+    assert it still escapes the middleware.
+    """
+    sink = NullSink()
+    app = FastAPI()
+
+    @app.get("/cancelled")
+    async def cancelled() -> None:
+        raise asyncio.CancelledError()
+
+    app.add_middleware(AuditMiddleware, config=build_config(), sink=sink)
+
+    with pytest.raises(BaseException) as caught:
+        async with client_for(app) as client:
+            await client.get("/cancelled")
+    assert isinstance(caught.value, asyncio.CancelledError)
