@@ -99,3 +99,48 @@ def test_user_resolver_is_callable_and_optional() -> None:
     c = AuditConfig(service_name="s", user_resolver=lambda scope: {"id": "u1"})
     assert c.user_resolver is not None
     assert c.user_resolver({}) == {"id": "u1"}
+
+
+# ---------------------------------------------------------------------------
+# FR-33 — declaring where the documents land
+# ---------------------------------------------------------------------------
+
+
+def test_FR_33_index_name_is_derived_from_service_and_environment() -> None:
+    c = AuditConfig(service_name="Orders API", environment="prod")
+    assert c.data_stream_dataset == "apiaudit.orders_api"
+    assert c.data_stream_namespace == "prod"
+    assert c.index_name == "logs-apiaudit.orders_api-prod"
+
+
+def test_FR_33_dataset_and_namespace_can_be_overridden() -> None:
+    c = AuditConfig(service_name="anything", dataset="apiaudit.billing", namespace="tenant-a")
+    assert c.index_name == "logs-apiaudit.billing-tenant_a"
+
+
+@pytest.mark.parametrize("bad", ["myaudit.foo", "logs-apiaudit.foo", "audit.foo", "apiaudit"])
+def test_FR_33_a_dataset_the_template_cannot_match_is_refused(bad: str) -> None:
+    """The guard that matters.
+
+    `index_patterns` is `logs-apiaudit.*-*`. A dataset outside that prefix
+    produces an index the template does not match, so Elasticsearch creates it
+    with a **dynamic mapping** — which keeps working until the field count
+    explodes and is fixable only by a reindex (D-11). Silent at every layer,
+    so it has to be refused here.
+    """
+    with pytest.raises(ValidationError, match="apiaudit"):
+        AuditConfig(service_name="s", dataset=bad)
+
+
+def test_FR_33_overrides_are_sanitised_like_the_derived_form() -> None:
+    """Elasticsearch rejects a data stream name with uppercase or `,\\\\/*?"<>|`
+    or a space, so an override cannot be passed through unchecked."""
+    c = AuditConfig(service_name="s", dataset="apiaudit.Billing V2", namespace="Tenant A")
+    assert c.index_name == "logs-apiaudit.billing_v2-tenant_a"
+
+
+def test_FR_33_env_vars_reach_the_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUDIT_SERVICE_NAME", "s")
+    monkeypatch.setenv("AUDIT_DATASET", "apiaudit.custom")
+    monkeypatch.setenv("AUDIT_NAMESPACE", "staging")
+    assert AuditConfig().index_name == "logs-apiaudit.custom-staging"

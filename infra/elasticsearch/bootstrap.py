@@ -34,7 +34,13 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 #: Elasticsearch endpoint. One node is enough; this is a control-plane script.
-ES_URL = "https://elasticsearch.internal:9200"
+#:
+#: The ``ES_URL`` environment variable wins when set, so this file does not have
+#: to be edited to point at a staging cluster or a throwaway container — which
+#: previously made it impossible to exercise this script from the acceptance
+#: tests, and meant the tests PUT the JSON directly instead of testing the
+#: thing that actually ships.
+ES_URL = os.environ.get("ES_URL", "https://elasticsearch.internal:9200")
 
 #: Basic auth. Leave both empty and set ES_API_KEY to use an API key instead.
 #: The env-var fallbacks exist so the credentials can come from a K8s Secret

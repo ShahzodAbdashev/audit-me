@@ -949,7 +949,7 @@ def build_document(
         "data_stream": {
             "type": "logs",
             "dataset": config.data_stream_dataset,
-            "namespace": config.environment,
+            "namespace": config.data_stream_namespace,
         },
         "event": {
             "kind": "event",

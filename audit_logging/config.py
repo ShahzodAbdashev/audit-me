@@ -44,6 +44,21 @@ class AuditConfig(BaseSettings):
     service_version: str = "unknown"
     environment: str = "dev"
 
+    # --- where the documents land (FR-33) -----------------------------------
+    #: Overrides the dataset derived from ``service_name``. This is the second
+    #: half of the index name: ``logs-<dataset>-<namespace>``.
+    #:
+    #: **It must start with** ``apiaudit.`` — the shipped index template is
+    #: ``index_patterns: ["logs-apiaudit.*-*"]``, so a dataset outside that
+    #: prefix means the template does not apply, the data stream is created
+    #: with a *dynamic* mapping, and only a reindex fixes it (D-11). The
+    #: validator below refuses it rather than letting that happen quietly.
+    dataset: str | None = None
+    #: Overrides the namespace, which otherwise follows ``environment``. Use it
+    #: when the audit namespace and the deployment environment are not the same
+    #: thing (one cluster serving several tenants, say).
+    namespace: str | None = None
+
     # --- kill switch (FR-15) ------------------------------------------------
     enabled: bool = True
 
@@ -136,6 +151,33 @@ class AuditConfig(BaseSettings):
             return json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
+    @field_validator("dataset")
+    @classmethod
+    def _dataset_must_match_the_template(cls, v: str | None) -> str | None:
+        """Refuse a dataset the shipped index template cannot match.
+
+        ``infra/elasticsearch/template-apiaudit.json`` is
+        ``index_patterns: ["logs-apiaudit.*-*"]``. A dataset outside that
+        prefix produces an index the template does not match, so Elasticsearch
+        creates it with a **dynamic mapping** — which keeps working, and keeps
+        indexing, until the field count explodes, and is fixable only by a
+        reindex (D-11). That failure is silent at every layer, so it is caught
+        here instead.
+        """
+        if v is None:
+            return v
+        if not v.startswith("apiaudit."):
+            raise ValueError(
+                f"dataset must start with 'apiaudit.' (got {v!r}). The shipped index "
+                "template matches logs-apiaudit.*-* only; anything else silently gets a "
+                "dynamic mapping that only a reindex can fix. To use a different prefix, "
+                "change index_patterns in infra/elasticsearch/template-apiaudit.json and "
+                "reinstall the template first."
+            )
+        if len(v) <= len("apiaudit."):
+            raise ValueError("dataset needs something after the 'apiaudit.' prefix")
+        return v
+
     @model_validator(mode="after")
     def _check_queue_bounds(self) -> AuditConfig:
         if self.queue_max_bytes < self.flush_max_bytes:
@@ -145,11 +187,37 @@ class AuditConfig(BaseSettings):
             )
         return self
 
+    @staticmethod
+    def _sanitise(value: str) -> str:
+        """Lowercase, with anything outside ``[a-z0-9_.]`` replaced by ``_``.
+
+        Elasticsearch rejects a data stream name containing ``\\ / * ? " < > | ,``
+        a space, or an uppercase letter, so this is not cosmetic.
+        """
+        return "".join(
+            ch if (ch.isascii() and (ch.isdigit() or ch.islower() or ch in "_.")) else "_"
+            for ch in value.lower()
+        )
+
     @property
     def data_stream_dataset(self) -> str:
-        """``apiaudit.<sanitised service name>`` (plan §6.2)."""
-        safe = "".join(
-            ch if (ch.isascii() and (ch.isdigit() or ch.islower() or ch in "_.")) else "_"
-            for ch in self.service_name.lower()
-        )
-        return f"apiaudit.{safe}"
+        """``apiaudit.<sanitised service name>``, or the ``dataset`` override."""
+        if self.dataset is not None:
+            return self._sanitise(self.dataset)
+        return f"apiaudit.{self._sanitise(self.service_name)}"
+
+    @property
+    def data_stream_namespace(self) -> str:
+        """The ``namespace`` override, else ``environment`` (plan §6.2)."""
+        return self._sanitise(self.namespace if self.namespace is not None else self.environment)
+
+    @property
+    def index_name(self) -> str:
+        """The data stream these documents land in.
+
+        Filebeat builds this from the three ``data_stream.*`` fields the
+        package writes, so this is the whole routing contract in one string —
+        useful for a startup log line, and for the query an operator runs when
+        asking "where did my audit records go?".
+        """
+        return f"logs-{self.data_stream_dataset}-{self.data_stream_namespace}"

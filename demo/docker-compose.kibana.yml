@@ -1,0 +1,52 @@
+# Kibana, for looking at the audit index in a browser.
+#
+# Deliberately a SEPARATE file from tests/integration/docker-compose.test.yml.
+# Kibana takes ~1 GB and a minute or two to become ready, and the Tier 1
+# acceptance suite needs neither — adding it there would tax every test run
+# for something only a human uses.
+#
+#   sg docker -c "docker compose -f demo/docker-compose.kibana.yml up -d"
+#   open http://localhost:5601
+#   sg docker -c "docker compose -f demo/docker-compose.kibana.yml down"
+#
+# It joins the network the test stack already created, so the test stack must
+# be up first (./demo/run_e2e.sh --keep, or `docker compose -f
+# tests/integration/docker-compose.test.yml up -d`).
+
+name: audit-logging-kibana
+
+services:
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    container_name: audit-kibana
+    environment:
+      # `audit-acceptance-es` is the service name on the shared network.
+      - ELASTICSEARCH_HOSTS=http://audit-acceptance-es:9200
+      # The test cluster runs with security disabled, so there is no user to
+      # authenticate as and no token to enrol with.
+      - XPACK_SECURITY_ENABLED=false
+      - XPACK_REPORTING_ENABLED=false
+      - XPACK_FLEET_ENABLED=false
+      - XPACK_APM_SERVICEMAPENABLED=false
+      - TELEMETRY_ENABLED=false
+      # Kibana refuses to start without a 32+ character key once any encrypted
+      # saved object exists. Fixed here so restarts do not invalidate them;
+      # this is a throwaway test value and is not a secret.
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=audit_logging_demo_only_not_a_secret_32
+      - NODE_OPTIONS=--max-old-space-size=768
+    ports:
+      - "127.0.0.1:5601:5601"
+    mem_limit: 1200m
+    healthcheck:
+      # /api/status reports "available" only once it has actually connected to
+      # Elasticsearch, which is the thing worth waiting for.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status | grep -q '\"level\":\"available\"' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+
+networks:
+  default:
+    name: audit-logging-acceptance_default
+    external: true
