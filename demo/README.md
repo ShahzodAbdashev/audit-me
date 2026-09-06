@@ -63,3 +63,59 @@ asserts that two documented leaks **are still present**:
 They are asserted positively so that if either limitation is ever fixed, the
 check fails and tells you to update the documentation. A limitation that
 silently stops being true makes the docs a lie in the other direction.
+
+---
+
+## Seeing the results
+
+Bring the stack up and leave it running:
+
+```bash
+sg docker -c "./demo/run_e2e.sh --keep"      # or just ./demo/run_e2e.sh after re-login
+```
+
+Then look at what landed. `demo/query.py` wraps the queries you actually want:
+
+```bash
+./.venv/bin/python demo/query.py             # cluster health + documents per service
+./.venv/bin/python demo/query.py recent 10   # last 10 requests, one line each
+./.venv/bin/python demo/query.py doc         # the full JSON of the most recent record
+./.venv/bin/python demo/query.py errors      # only failures, with error.type
+./.venv/bin/python demo/query.py slow 100    # anything over 100 ms
+./.venv/bin/python demo/query.py routes      # count + p95 latency, by route template
+./.venv/bin/python demo/query.py trace <id>  # one request by its X-Request-ID
+./.venv/bin/python demo/query.py leaks hunter2   # search every field for a string
+./.venv/bin/python demo/query.py mapping     # prove dynamic:false is in force
+```
+
+`ES_URL` points it at a different cluster.
+
+### The three checks that tell you it is really working
+
+Documents arriving is necessary but not sufficient. These three are the ones
+that distinguish a working pipeline from one that only looks like it:
+
+| check | what a bad answer means |
+|---|---|
+| `query.py mapping` says `dynamic : 'false'` | If it says `None`, the index template did not apply and the data stream was auto-created with a dynamic mapping. It will keep working and keep indexing until the field count explodes, and it is only fixable by a reindex (D-11). |
+| `query.py leaks <a real secret>` returns 0 | Redaction is per-field. A hit in `url.path` or in a parse-failure `body_raw` is *documented* (docs/redaction.md §4.5, AC-14); a hit anywhere else is a live leak. |
+| `query.py routes` shows route **templates** | If you see `/orders/42` instead of `/orders/{order_id}`, route resolution is failing and every distinct id is its own bucket. |
+
+### Raw curl, if you prefer
+
+```bash
+curl -s localhost:9200/_cluster/health?pretty
+curl -s 'localhost:9200/_cat/indices/logs-apiaudit*?v&h=index,docs.count,store.size'
+curl -s 'localhost:9200/logs-apiaudit.*-*/_search?pretty&size=1&sort=@timestamp:desc'
+```
+
+### Is Filebeat keeping up?
+
+```bash
+curl -s localhost:5066/stats | ./.venv/bin/python -m json.tool | grep -A6 '"output"'
+```
+
+`events.acked` should track what the package wrote; `dropped` and `failed`
+should be `0`. If `acked` stalls while the JSONL file keeps growing, the
+shipper is the problem, not the package — check
+`docker compose -f tests/integration/docker-compose.test.yml logs filebeat`.
