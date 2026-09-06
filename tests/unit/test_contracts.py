@@ -137,15 +137,41 @@ def test_no_network_client_in_the_request_path(self=None) -> None:
 
     root = pathlib.Path(__file__).resolve().parents[2] / "audit_logging"
     banned = ("elasticsearch", "kafka", "httpx", "requests", "aiohttp", "urllib3")
+    # The two modules whose job IS talking to Elasticsearch. Neither is
+    # reachable from the request path, and neither is imported by
+    # `audit_logging/__init__.py` — asserted separately below, because an
+    # exemption is only safe while that stays true.
+    exempt = {"shipper.py", "check.py"}
     offenders: list[str] = []
     for py in root.rglob("*.py"):
-        if py.name == "shipper.py":
+        if py.name in exempt:
             continue
         text = py.read_text()
         for name in banned:
             if f"import {name}" in text or f"from {name}" in text:
                 offenders.append(f"{py.name}: {name}")
     assert offenders == [], offenders
+
+
+def test_the_package_root_does_not_import_the_network_modules() -> None:
+    """What makes the exemption above safe.
+
+    `shipper.py` and `check.py` may use httpx, but `import audit_logging` must
+    not drag them in — otherwise the exemption quietly becomes "the package
+    imports an HTTP client", which is the thing NFR-4 exists to prevent.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "audit_logging"
+    tree = ast.parse((root / "__init__.py").read_text())
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+        elif isinstance(node, ast.Import):
+            imported += [a.name for a in node.names]
+    assert not any("shipper" in m or "check" in m for m in imported), imported
 
 
 def test_the_shippers_http_client_is_imported_lazily() -> None:
@@ -160,17 +186,18 @@ def test_the_shippers_http_client_is_imported_lazily() -> None:
     import ast
     import pathlib
 
-    source = (
-        pathlib.Path(__file__).resolve().parents[2] / "audit_logging" / "shipper.py"
-    ).read_text()
-    tree = ast.parse(source)
-    for node in tree.body:  # module level only
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = [a.name for a in node.names] + ([node.module] if isinstance(node, ast.ImportFrom) else [])
-            for name in names:
-                assert name is None or not name.startswith(
-                    ("httpx", "requests", "aiohttp", "elasticsearch")
-                ), f"{name} is imported at module level in shipper.py"
+    root = pathlib.Path(__file__).resolve().parents[2] / "audit_logging"
+    for filename in ("shipper.py", "check.py"):
+        tree = ast.parse((root / filename).read_text())
+        for node in tree.body:  # module level only
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in node.names] + (
+                    [node.module] if isinstance(node, ast.ImportFrom) else []
+                )
+                for name in names:
+                    assert name is None or not name.startswith(
+                        ("httpx", "requests", "aiohttp", "elasticsearch")
+                    ), f"{name} is imported at module level in {filename}"
 
 
 def test_importing_the_package_does_not_pull_in_httpx() -> None:
