@@ -229,3 +229,29 @@ __marimo__/
 
 # Benchmark output
 .benchmarks/
+
+# ---------------------------------------------------------------------------
+# Working documents — kept locally, deliberately not published
+# ---------------------------------------------------------------------------
+#
+# The repository ships the code, the infrastructure and README.md. These are
+# the design and review artefacts from building it: useful to whoever
+# maintains this, noise to whoever just wants to use it.
+#
+# NOTE: nothing at runtime reads these. The test suite reads
+# infra/elasticsearch/*.json (which IS tracked); the .md files are referenced
+# only in prose. A fresh clone runs the full suite without them.
+#
+# Everything genuinely needed to use the package safely — including the
+# redaction limitations — was folded into README.md.
+
+PLAN-*.md
+REVIEW.md
+REVIEW-[0-9]*.md
+AGENTS.md
+CHANGELOG.md
+docs/
+demo/README.md
+infra/README.md
+tests/AC-matrix.md
+tests/integration/README.md
