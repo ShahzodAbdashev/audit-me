@@ -255,3 +255,6 @@ demo/README.md
 infra/README.md
 tests/AC-matrix.md
 tests/integration/README.md
+
+# Build artefacts
+dist/

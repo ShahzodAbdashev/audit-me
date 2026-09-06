@@ -14,15 +14,11 @@ FastAPI ─▶ middleware ─▶ file ─▶ Filebeat ─▶ Elasticsearch
 
 ---
 
-## 1. Install
+## Quick start
 
 ```bash
-pip install git+https://github.com/ShahzodAbdashev/audit-me.git
+pip install "audit-me[elasticsearch]"
 ```
-
-Python 3.11+. Only needs `pydantic` and `pydantic-settings`.
-
-## 2. Add two lines to your app
 
 ```python
 from audit_logging import AuditConfig, AuditMiddleware
@@ -30,45 +26,55 @@ from audit_logging import AuditConfig, AuditMiddleware
 app.add_middleware(AuditMiddleware, config=AuditConfig())
 ```
 
-That's it. Everything else is environment variables.
-
-## 3. Set the environment
-
 ```bash
-export AUDIT_SERVICE_NAME=orders-api      # required — also names the ES index
+export AUDIT_SERVICE_NAME=orders-api
 export AUDIT_ENVIRONMENT=prod
-export AUDIT_LOG_DIR=/var/log/audit       # must be writable by your app
+export AUDIT_LOG_DIR=/var/log/audit
+
+export AUDIT_ELASTICSEARCH_URL=https://your-cluster:9200
+export AUDIT_ELASTICSEARCH_USERNAME=elastic
+export AUDIT_ELASTICSEARCH_PASSWORD=...
 ```
 
-Those three are the minimum. Records land in
+Start your app. That is the whole setup — no Filebeat, no manual template
+install, nothing to run first. On startup the package installs its own index
+template and ILM policy, then ships. Records appear in
 `logs-apiaudit.orders_api-prod`.
 
-## 4. Install the Elasticsearch template — **before your first request**
+Use `AUDIT_ELASTICSEARCH_API_KEY` instead of user/password if you prefer, and
+`AUDIT_ELASTICSEARCH_VERIFY_CERTS=false` for a self-signed cluster.
 
-```bash
-export ES_URL=https://your-cluster:9200
-export ES_USERNAME=elastic
-export ES_PASSWORD=...
+### It still writes to disk first
 
-python infra/elasticsearch/bootstrap.py
+Setting a URL does **not** make your API depend on Elasticsearch. Records go to
+a local JSONL file, and a background task tails that file and bulk-posts it:
+
+```
+FastAPI ─▶ middleware ─▶ file ─▶ shipper ─▶ Elasticsearch
+           ~30 µs, no I/O        background
 ```
 
-> **Do this first.** If records arrive before the template exists,
-> Elasticsearch invents its own mapping. Everything keeps working until the
-> field count explodes, and the only fix is a reindex.
+If the cluster is down, the files accumulate and the shipper retries. Tested:
+stop Elasticsearch, serve 25 requests, restart it — all 25 records arrive, and
+not one request was slowed or failed.
 
-## 5. Run Filebeat over the log directory
+The shipper also refuses to send anything until the index template is installed.
+A data stream created without it gets a dynamic mapping, which keeps working
+until the field count explodes and is fixable only by a reindex.
 
-Config is in `infra/filebeat/`. Point it at the same directory:
+### Using Filebeat instead
+
+If you already run Filebeat, leave `AUDIT_ELASTICSEARCH_URL` unset and no HTTP
+client is even imported. Point Filebeat at `AUDIT_LOG_DIR`; `infra/filebeat/`
+has a working config and a Kubernetes DaemonSet, and
+`infra/elasticsearch/bootstrap.py` installs the template:
 
 ```bash
-export ES_HOSTS=https://your-cluster:9200
-export ES_USERNAME=filebeat_writer
-export ES_PASSWORD=...
+ES_URL=https://your-cluster:9200 ES_USERNAME=elastic ES_PASSWORD=... \
+  python infra/elasticsearch/bootstrap.py
 ```
 
-On Kubernetes use `infra/filebeat/daemonset.yaml`, and mount the log dir into
-your app pod:
+On Kubernetes, mount the log directory into your app pod:
 
 ```yaml
 volumeMounts:
@@ -76,6 +82,11 @@ volumeMounts:
     mountPath: /var/log/audit
     subPathExpr: $(POD_NAME)
 ```
+
+Two things there are easy to get wrong: a `runAsNonRoot` app needs the
+`initContainer` in the manifest to be able to write into the mounted directory,
+and Filebeat's Elasticsearch role must **not** hold `manage_index_templates` —
+`setup.template.enabled: false` is a request, not an enforcement.
 
 ---
 
@@ -91,6 +102,19 @@ volumeMounts:
 | `AUDIT_ENABLED` | `true` | **`false` turns everything off.** Your kill switch |
 | `AUDIT_EXTRA_REDACT_KEYS` | — | Extra keys to redact: `email,phone,national_id` |
 | `AUDIT_SERVICE_VERSION` | `unknown` | Recorded on every record |
+
+**Shipping straight to Elasticsearch** (omit all of these to use Filebeat):
+
+| Variable | Default | |
+|---|---|---|
+| `AUDIT_ELASTICSEARCH_URL` | — | Set it and the package ships its own records |
+| `AUDIT_ELASTICSEARCH_USERNAME` / `_PASSWORD` | — | Basic auth |
+| `AUDIT_ELASTICSEARCH_API_KEY` | — | Base64 `id:api_key`, instead of the above |
+| `AUDIT_ELASTICSEARCH_VERIFY_CERTS` | `true` | `false` for a self-signed cluster |
+| `AUDIT_ELASTICSEARCH_SETUP` | `true` | Install the template and ILM policy on start |
+| `AUDIT_RETENTION_DAYS` | `90` | When ILM deletes the index |
+| `AUDIT_SHIP_INTERVAL_SECONDS` | `2.0` | How often the shipper checks for new records |
+| `AUDIT_SHIP_BATCH_SIZE` | `500` | Documents per bulk request |
 
 **Tuning, if you need it:**
 

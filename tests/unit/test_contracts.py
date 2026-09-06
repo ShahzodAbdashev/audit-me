@@ -124,19 +124,72 @@ class TestNullSink:
         assert isinstance(NullSink(), Sink)
 
 
-def test_no_network_client_is_importable_from_the_package() -> None:
-    """NFR-4 / AGENTS.md rule 3, enforced as a test rather than a grep."""
+def test_no_network_client_in_the_request_path(self=None) -> None:
+    """NFR-4, narrowed: the *capture* path still imports no network client.
+
+    `shipper.py` (FR-35) is the one module allowed an HTTP client, because it
+    is the module whose whole job is talking to Elasticsearch. Everything the
+    request path touches must stay clean, so that a deployment shipping with
+    Filebeat carries no HTTP stack and a cluster problem has no way to reach
+    the application.
+    """
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[2] / "audit_logging"
     banned = ("elasticsearch", "kafka", "httpx", "requests", "aiohttp", "urllib3")
     offenders: list[str] = []
     for py in root.rglob("*.py"):
+        if py.name == "shipper.py":
+            continue
         text = py.read_text()
         for name in banned:
             if f"import {name}" in text or f"from {name}" in text:
                 offenders.append(f"{py.name}: {name}")
     assert offenders == [], offenders
+
+
+def test_the_shippers_http_client_is_imported_lazily() -> None:
+    """Importing the package must not import an HTTP stack.
+
+    `shipper.py` may use httpx, but only inside a function. A module-level
+    import would put an HTTP client into every process that merely imports
+    `audit_logging`, including the ones shipping with Filebeat that asked for
+    no such dependency — and would make the optional extra mandatory in
+    practice.
+    """
+    import ast
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[2] / "audit_logging" / "shipper.py"
+    ).read_text()
+    tree = ast.parse(source)
+    for node in tree.body:  # module level only
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name for a in node.names] + ([node.module] if isinstance(node, ast.ImportFrom) else [])
+            for name in names:
+                assert name is None or not name.startswith(
+                    ("httpx", "requests", "aiohttp", "elasticsearch")
+                ), f"{name} is imported at module level in shipper.py"
+
+
+def test_importing_the_package_does_not_pull_in_httpx() -> None:
+    """The same claim, checked at runtime rather than by reading the source."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, audit_logging; "
+            "print('httpx' in sys.modules or 'elasticsearch' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False", result.stdout
 
 
 def test_no_awaits_hide_behind_submit_in_the_package() -> None:

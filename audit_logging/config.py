@@ -59,6 +59,32 @@ class AuditConfig(BaseSettings):
     #: thing (one cluster serving several tenants, say).
     namespace: str | None = None
 
+    # --- built-in shipping (FR-35, optional) --------------------------------
+    #: Set this and the package ships its own records — no Filebeat needed.
+    #:
+    #: It does NOT change how the request path works. Records still go to a
+    #: local JSONL file first; a background task then tails that file and bulk
+    #: posts it. The file remains the durable buffer, so an Elasticsearch
+    #: outage still cannot reach the application (D-13's actual purpose).
+    #: Requires the ``elasticsearch`` extra: ``pip install audit-me[elasticsearch]``.
+    elasticsearch_url: str | None = None
+    elasticsearch_username: str | None = None
+    elasticsearch_password: str | None = None
+    #: Base64 ``id:api_key``. Takes precedence over username/password.
+    elasticsearch_api_key: str | None = None
+    #: Set false only for a self-signed cluster you control.
+    elasticsearch_verify_certs: bool = True
+    #: Install the ILM policy and index template on start. Leave it on unless
+    #: an operator manages the mapping out of band — the shipper refuses to
+    #: send anything until the template exists, because the first document
+    #: would otherwise create a data stream with a dynamic mapping (D-11).
+    elasticsearch_setup: bool = True
+    #: Days before ILM deletes an index. Compliance may dictate this.
+    retention_days: int = Field(default=90, gt=0)
+    ship_interval_seconds: float = Field(default=2.0, gt=0)
+    ship_batch_size: int = Field(default=500, gt=0)
+    ship_timeout_seconds: float = Field(default=30.0, gt=0)
+
     # --- kill switch (FR-15) ------------------------------------------------
     enabled: bool = True
 

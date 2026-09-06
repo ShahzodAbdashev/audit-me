@@ -128,6 +128,7 @@ class AuditMiddleware:
         "app",
         "config",
         "metrics",
+        "_shipper",
         "_sink",
         "_enabled",
         "_exclude",
@@ -160,6 +161,7 @@ class AuditMiddleware:
         )
         self._max_body = int(config.max_body_bytes)
         self._sink_started = False
+        self._shipper: Any = None
         self._sink_closed = False
         self._background: set[asyncio.Task[None]] = set()
         # FR-15: with the kill switch off nothing is allocated and no file is
@@ -247,8 +249,37 @@ class AuditMiddleware:
             await self._sink.start()
         except Exception as exc:
             self._oops("sink.start() failed", exc)
+        await self._start_shipper()
+
+    async def _start_shipper(self) -> None:
+        """Start the built-in shipper, if one is configured (FR-35).
+
+        Imported here and nowhere else, so a deployment that ships with
+        Filebeat never imports an HTTP client at all. A shipper that fails to
+        start is counted and swallowed like everything else: the records are
+        already durable on disk, and Filebeat or a later restart can still
+        collect them. Audit capture must not depend on the shipper.
+        """
+        if self._shipper is not None or not self.config.elasticsearch_url:
+            return
+        try:
+            from .shipper import ElasticsearchShipper
+
+            self._shipper = ElasticsearchShipper(self.config, self.metrics)
+            await self._shipper.start()
+        except Exception as exc:
+            self._shipper = None
+            self._oops("could not start the elasticsearch shipper", exc)
 
     async def _close_sink(self) -> None:
+        # Shipper first: it reads what the sink has already written, so
+        # stopping it after the sink's final flush would strand those lines.
+        if self._shipper is not None:
+            try:
+                await self._shipper.close()
+            except Exception as exc:
+                self._oops("shipper.close() failed", exc)
+            self._shipper = None
         if self._sink is None or self._sink_closed:
             return
         self._sink_closed = True

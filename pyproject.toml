@@ -3,16 +3,38 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "audit-logging"
-version = "0.1.0.dev0"
-description = "One JSONL audit document per API request, captured at the ASGI layer."
+# `audit-logging` is taken on PyPI; this matches the repository name.
+name = "audit-me"
+version = "0.1.0"
+description = "Per-request API audit logging for FastAPI, with redaction, straight to Elasticsearch."
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
+authors = [{ name = "Abdashev Shahzod" }]
+keywords = ["audit", "logging", "fastapi", "asgi", "elasticsearch", "compliance", "redaction"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Logging",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ShahzodAbdashev/audit-me"
+Issues = "https://github.com/ShahzodAbdashev/audit-me/issues"
+
 [project.optional-dependencies]
+# Ship to Elasticsearch from inside the app, with no Filebeat.
+elasticsearch = ["httpx>=0.27"]
 # Peer, not a hard dependency: the host application already brings it.
 starlette = ["starlette>=0.37"]
 prometheus = ["prometheus-client>=0.20"]
@@ -29,6 +51,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["audit_logging*"]
+
+[tool.setuptools.package-data]
+audit_logging = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
