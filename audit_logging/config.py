@@ -44,10 +44,19 @@ class _RawListEnvSource(EnvSettingsSource):
     sees it.
 
     ``NoDecode`` does exactly this and is the obvious answer, but it only
-    exists in pydantic-settings >= 2.8. Depending on it made this package
-    unimportable for anyone on an older pin — which is a poor trade for a
-    library, since the consumer's stack is not ours to dictate. This subclass
-    is a few lines and works across 2.x.
+    exists in pydantic-settings >= 2.7.0 (measured, by bisection). Depending on
+    it made this package unimportable for anyone on an older pin — a poor trade
+    for a library, since the consumer's stack is not ours to dictate.
+
+    **The constructor arguments are load-bearing.** On pydantic-settings 2.0.0,
+    ``EnvSettingsSource(settings_cls)`` does not pick up ``env_prefix`` from
+    ``model_config``: the prefix resolves to ``""``, no ``AUDIT_*`` variable
+    matches, and substituting this source silently disables the **entire**
+    environment layer rather than just the list fields. That failure is worse
+    than the ImportError it replaced — ``AUDIT_ENABLED=false`` would be
+    accepted and ignored, so an operator's kill switch would not take effect
+    and nothing would say so. Passing the config explicitly makes it correct
+    from 2.0.0 onward.
     """
 
     def prepare_field_value(
@@ -229,9 +238,18 @@ class AuditConfig(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Same precedence as the default, with our env source substituted."""
+        config = settings_cls.model_config
         return (
             init_settings,
-            _RawListEnvSource(settings_cls),
+            # Pass these explicitly — see _RawListEnvSource's docstring. On
+            # 2.0.0 they are not inherited from model_config, and the failure
+            # is silent.
+            _RawListEnvSource(
+                settings_cls,
+                case_sensitive=config.get("case_sensitive", False),
+                env_prefix=config.get("env_prefix", ""),
+                env_nested_delimiter=config.get("env_nested_delimiter"),
+            ),
             dotenv_settings,
             file_secret_settings,
         )

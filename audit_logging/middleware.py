@@ -250,6 +250,30 @@ class AuditMiddleware:
         except Exception as exc:
             self._oops("sink.start() failed", exc)
         await self._start_shipper()
+        self._announce()
+
+    def _announce(self) -> None:
+        """One INFO line at startup saying where records go.
+
+        Without it the only way to tell audit logging is working is to make a
+        request and go looking for the file — and the common failure (an
+        unwritable log_dir, or a service that simply has not been called yet)
+        looks identical to a misconfiguration. This costs one line per process
+        and answers "is it on, and which index?" directly.
+        """
+        config = self.config
+        where = (
+            f"shipping to {config.elasticsearch_url}"
+            if config.elasticsearch_url
+            else "Filebeat should ship these"
+        )
+        _LOGGER.info(
+            "audit_logging: ON  service=%s  index=%s  dir=%s  %s",
+            config.service_name,
+            config.index_name,
+            config.log_dir,
+            where,
+        )
 
     async def _start_shipper(self) -> None:
         """Start the built-in shipper, if one is configured (FR-35).
