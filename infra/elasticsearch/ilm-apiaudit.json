@@ -1,17 +1,17 @@
 {
   "_meta": {
-    "RETENTION_DAYS": 90,
+    "RETENTION_DAYS": null,
 
-    "_comment_retention": "^^^ THE ONE RETENTION KNOB. Change this number and nothing else. bootstrap.py reads _meta.RETENTION_DAYS and writes it into policy.phases.delete.min_age before the PUT, so the two can never drift. Plan I-4 is UNANSWERED: 90d is a discretionary default, not a compliance number.",
+    "_comment_retention": "^^^ THE ONE RETENTION KNOB. null means NEVER DELETE: bootstrap.py leaves the delete phase out of the policy entirely, which is the shipped default. Set a positive integer and it writes that into policy.phases.delete.min_age before the PUT, so the two can never drift. Plan I-4 is UNANSWERED, and an audit trail that erases its own evidence on a timer is the one failure you cannot undo — so the default errs towards keeping.",
 
     "_comment_put": "This top-level _meta block is NOT part of the ILM API body; _ilm/policy accepts only the 'policy' key. bootstrap.py strips it. To PUT by hand: jq '{policy}' ilm-apiaudit.json | curl ... -d @- (see infra/README.md).",
 
-    "_comment_cold": "The cold phase is only valid on a cluster that actually has cold-tier nodes (data_cold role). On a cluster without them, ILM parks the index in 'check-migration' forever. Set COLD_TIER_EXISTS = False in bootstrap.py's config block and the cold phase is stripped from the policy before the PUT; warm then runs straight into delete.",
+    "_comment_cold": "The cold phase is only valid on a cluster that actually has cold-tier nodes (data_cold role). On a cluster without them, ILM parks the index in 'check-migration' forever. Set COLD_TIER_EXISTS = False in bootstrap.py's config block and the cold phase is stripped from the policy before the PUT; warm then runs straight into delete. Note the cold min_age (14d) must stay clear of delete.min_age (30d by default): if they coincide, an index on a cluster with no cold tier parks in check-migration and is never deleted at all.",
 
     "_comment_sizing": "Rollover at 50 GB primary / 7 d. Per plan §5 (~0.6 KB/doc on ES disk before replication): 50 GB is ~2.5 d of primaries at 200 rps, ~10 d at 50 rps, ~50 d at 10 rps — so at 10 and 50 rps the 7 d max_age is what actually fires.",
 
     "owner": "A5 — infrastructure",
-    "applies_to": "index template 'logs-apiaudit' -> index.lifecycle.name = apiaudit-ilm"
+    "applies_to": "index template 'logs-<dataset>' -> index.lifecycle.name = <dataset>-ilm"
   },
 
   "policy": {
@@ -48,21 +48,13 @@
         }
       },
       "cold": {
-        "min_age": "30d",
+        "min_age": "14d",
         "actions": {
           "set_priority": {
             "priority": 0
           },
           "allocate": {
             "number_of_replicas": 0
-          }
-        }
-      },
-      "delete": {
-        "min_age": "90d",
-        "actions": {
-          "delete": {
-            "delete_searchable_snapshot": false
           }
         }
       }

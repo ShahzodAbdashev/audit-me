@@ -350,6 +350,8 @@ async def run_comparison(
     try:
         config = AuditConfig(
             service_name="load-api",
+            dataset="load_api",
+            elasticsearch_url=None,
             service_version="1.0.0",
             environment="load",
             log_dir=log_dir,

@@ -78,10 +78,11 @@ INDEX_TEMPLATE_NAME = f"logs-{DATASET}"
 #: The token both JSON files carry in place of the dataset.
 DATASET_PLACEHOLDER = "{dataset}"
 
-#: Retention override, in days. None => use `_meta.RETENTION_DAYS` from
+#: Retention override, in days, or the string "never". None => use
+#: `_meta.RETENTION_DAYS` from
 #: ilm-apiaudit.json (the intended single source of truth, plan I-4).
 #: Set an int here only for a one-off environment that differs from the file.
-RETENTION_DAYS: int | None = None
+RETENTION_DAYS: int | str | None = None
 
 #: Does this cluster have nodes with the `data_cold` role?
 #: False strips the cold phase entirely — on a cluster with no cold tier a cold
@@ -273,23 +274,39 @@ def check_body_raw(template: dict[str, Any]) -> list[str]:
     return problems
 
 
-def resolve_retention_days(ilm_doc: dict[str, Any], override: int | None) -> int:
-    """The single retention knob: CONFIG override, else ``_meta.RETENTION_DAYS``."""
+def resolve_retention_days(
+    ilm_doc: dict[str, Any], override: int | str | None
+) -> int | None:
+    """The single retention knob: CONFIG override, else ``_meta.RETENTION_DAYS``.
+
+    ``None`` back means **never delete** — the delete phase is left out of the
+    policy entirely. That is the shipped default, and it is deliberate: an
+    audit trail that erases its own evidence on a timer is the one failure
+    here that cannot be undone.
+    """
+    if isinstance(override, str):
+        if override.strip().lower() not in ("never", "forever", "none", ""):
+            raise ValidationError(
+                f"RETENTION_DAYS override must be a positive int or 'never', got {override!r}"
+            )
+        return None
     if override is not None:
         if isinstance(override, bool) or not isinstance(override, int) or override <= 0:
             raise ValidationError(f"RETENTION_DAYS override must be a positive int, got {override!r}")
         return override
     days = ilm_doc.get("_meta", {}).get("RETENTION_DAYS")
+    if days is None:
+        return None
     if not isinstance(days, int) or isinstance(days, bool) or days <= 0:
         raise ValidationError(
-            "ilm-apiaudit.json must carry a positive integer _meta.RETENTION_DAYS "
-            f"(got {days!r}) — that is the one place retention is configured"
+            "ilm-apiaudit.json _meta.RETENTION_DAYS must be a positive integer, or "
+            f"null for never (got {days!r}) — that is the one place retention is configured"
         )
     return days
 
 
 def build_ilm_body(
-    ilm_doc: dict[str, Any], retention_days: int, cold_tier_exists: bool
+    ilm_doc: dict[str, Any], retention_days: int | None, cold_tier_exists: bool
 ) -> tuple[dict[str, Any], list[str]]:
     """Turn the on-disk ILM file into the exact `_ilm/policy` request body.
 
@@ -303,23 +320,31 @@ def build_ilm_body(
     notes: list[str] = []
     phases: dict[str, Any] = policy["phases"]
 
-    on_disk = phases.get("delete", {}).get("min_age")
-    want = f"{retention_days}d"
-    if on_disk != want:
-        notes.append(f"delete.min_age normalised {on_disk!r} -> {want!r} from RETENTION_DAYS")
-    phases.setdefault("delete", {"actions": {"delete": {}}})["min_age"] = want
+    if retention_days is None:
+        if phases.pop("delete", None) is not None:
+            notes.append("delete phase stripped (RETENTION_DAYS = never)")
+        else:
+            notes.append("no delete phase: nothing in this policy ever expires")
+    else:
+        on_disk = phases.get("delete", {}).get("min_age")
+        want = f"{retention_days}d"
+        if on_disk != want:
+            notes.append(f"delete.min_age normalised {on_disk!r} -> {want!r} from RETENTION_DAYS")
+        phases.setdefault("delete", {"actions": {"delete": {}}})["min_age"] = want
 
     if not cold_tier_exists:
         if phases.pop("cold", None) is not None:
             notes.append("cold phase stripped (COLD_TIER_EXISTS = False)")
 
-    for name, phase in phases.items():
-        min_age = phase.get("min_age", "0ms")
-        if name != "hot" and _days(min_age) > retention_days:
-            raise ValidationError(
-                f"phase {name!r} starts at {min_age} which is after the {want} "
-                "delete — the index would be deleted before it ever got there"
-            )
+    if retention_days is not None:
+        for name, phase in phases.items():
+            min_age = phase.get("min_age", "0ms")
+            if name != "hot" and _days(min_age) > retention_days:
+                raise ValidationError(
+                    f"phase {name!r} starts at {min_age} which is after the "
+                    f"{retention_days}d delete — the index would be deleted "
+                    "before it ever got there"
+                )
 
     return {"policy": policy}, notes
 

@@ -242,7 +242,7 @@ spec:
             # THE audit log tree. read-only: Filebeat has no business writing
             # into a directory whose whole purpose is being tamper-evident.
             - name: audit-logs
-              mountPath: /var/log/audit
+              mountPath: /var/log/fortress
               readOnly: true
             # path.data — registry + disk queue. On a hostPath so that a
             # Filebeat restart does not re-read every file from byte 0
@@ -281,7 +281,7 @@ spec:
             optional: true
         - name: audit-logs
           hostPath:
-            path: /var/log/audit
+            path: /var/log/fortress
             type: DirectoryOrCreate
         - name: filebeat-data
           hostPath:
@@ -293,7 +293,7 @@ spec:
 # ===========================================================================
 # THE OTHER HALF OF THE CONTRACT — what an application pod must do
 # ===========================================================================
-# The DaemonSet above reads /var/log/audit/<pod>/*.jsonl. Nothing produces
+# The DaemonSet above reads /var/log/fortress/<pod>/*.jsonl. Nothing produces
 # those files unless every audited application pod mounts the same hostPath
 # READ-WRITE under its own subdirectory.
 #
@@ -327,7 +327,7 @@ spec:
 #           fsGroup: 10001          # no effect on hostPath; harmless, and it
 #                                   # covers any other volume the pod adds
 #         initContainers:
-#           # Creates and chowns /var/log/audit/<pod-name> on the node.
+#           # Creates and chowns /var/log/fortress/<pod-name> on the node.
 #           # Mounting the volume with the SAME subPathExpr is what makes the
 #           # kubelet create the directory, at which point this container —
 #           # the only one in the pod running as root — can hand it to the app
@@ -366,16 +366,16 @@ spec:
 #                   fieldRef:
 #                     fieldPath: metadata.name
 #               # AuditConfig.log_dir (env prefix AUDIT_). Default is already
-#               # /var/log/audit, set explicitly so it is visible in the manifest.
+#               # /var/log/fortress, set explicitly so it is visible in the manifest.
 #               - name: AUDIT_LOG_DIR
-#                 value: /var/log/audit
+#                 value: /var/log/fortress
 #             volumeMounts:
 #               - name: audit-logs
-#                 mountPath: /var/log/audit
+#                 mountPath: /var/log/fortress
 #                 # subPathExpr expands $(POD_NAME), so the container sees a
-#                 # private /var/log/audit that is really
-#                 # /var/log/audit/<pod-name> on the node. That is what makes
-#                 # the DaemonSet's /var/log/audit/*/*.jsonl glob work, and
+#                 # private /var/log/fortress that is really
+#                 # /var/log/fortress/<pod-name> on the node. That is what makes
+#                 # the DaemonSet's /var/log/fortress/*/*.jsonl glob work, and
 #                 # what keeps two pods on one node from colliding.
 #                 # (kubelet creates the subdirectory; k8s >= 1.17.)
 #                 subPathExpr: $(POD_NAME)
@@ -383,12 +383,12 @@ spec:
 #         volumes:
 #           - name: audit-logs
 #             hostPath:
-#               path: /var/log/audit
+#               path: /var/log/fortress
 #               type: DirectoryOrCreate
 #
 # Node disk: file_max_bytes 256 MB x file_backup_count 8 = 2 GB per pod
 # (plan §5), x uvicorn workers if the pod runs more than one (FR-26 gives each
-# PID its own file). Size /var/log/audit accordingly, and make sure it is not
+# PID its own file). Size /var/log/fortress accordingly, and make sure it is not
 # on the same filesystem as the kubelet's image store.
 #
 # If your app namespace enforces PodSecurity `restricted`, a root initContainer
@@ -396,7 +396,7 @@ spec:
 #
 #   1. Grant the app namespace `baseline` (root initContainers with CHOWN only
 #      are permitted there), or attach an exception for this one init step.
-#   2. Pre-create /var/log/audit/<pod-name> on every node with the app's UID,
+#   2. Pre-create /var/log/fortress/<pod-name> on every node with the app's UID,
 #      out of band, before the pod starts. Workable only for a StatefulSet or
 #      a pinned pod name; a Deployment's pod names change on every rollout, so
 #      this is a trap and is listed only for completeness.
@@ -405,7 +405,7 @@ spec:
 #      Read its trade-offs; they are real.
 #
 # What does NOT work, so nobody has to rediscover it: `fsGroup` alone (not
-# applied to hostPath); chmod 1777 on the parent /var/log/audit (the kubelet
+# applied to hostPath); chmod 1777 on the parent /var/log/fortress (the kubelet
 # still creates the subPath dir as root:root 0755); and running the app as
 # root (defeats the point, and PSA baseline/restricted forbid it).
 #
@@ -443,10 +443,10 @@ spec:
 #           - name: api
 #             env:
 #               - name: AUDIT_LOG_DIR
-#                 value: /var/log/audit/local
+#                 value: /var/log/fortress/local
 #             volumeMounts:
 #               - name: audit-logs
-#                 mountPath: /var/log/audit
+#                 mountPath: /var/log/fortress
 #
 #           - name: filebeat
 #             image: registry.internal/beats/filebeat:8.13.4
@@ -469,7 +469,7 @@ spec:
 #               limits:   { cpu: "300m", memory: "300Mi" }
 #             volumeMounts:
 #               - name: audit-logs
-#                 mountPath: /var/log/audit
+#                 mountPath: /var/log/fortress
 #                 readOnly: true
 #               - name: filebeat-config
 #                 mountPath: /etc/filebeat/filebeat.yml
@@ -478,8 +478,8 @@ spec:
 #               - name: filebeat-data
 #                 mountPath: /usr/share/filebeat/data
 #
-# The one config change: the app writes to /var/log/audit/local (one level
-# down) so that the existing input glob /var/log/audit/*/*.jsonl still matches
+# The one config change: the app writes to /var/log/fortress/local (one level
+# down) so that the existing input glob /var/log/fortress/*/*.jsonl still matches
 # with no edit to filebeat.yml. Keep it that way — one config file, two
 # topologies.
 #

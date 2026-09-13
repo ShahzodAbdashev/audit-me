@@ -29,12 +29,27 @@ from audit_logging import AuditConfig, AuditMiddleware
 app.add_middleware(AuditMiddleware, config=AuditConfig())
 ```
 
-```bash
-export AUDIT_SERVICE_NAME=orders-api
-export AUDIT_ENVIRONMENT=prod
-export AUDIT_LOG_DIR=/var/log/audit
+`AuditConfig()` reads the environment. Anything passed in code wins over it.
 
-export AUDIT_ELASTICSEARCH_URL=https://your-cluster:9200
+Three variables are **required** and have no defaults — the process will not
+start without them:
+
+```bash
+export AUDIT_SERVICE_NAME=orders-api                      # who wrote the record
+export AUDIT_DATASET=orders_api                           # which index it lands in
+export AUDIT_ELASTICSEARCH_URL=https://your-cluster:9200  # where it ships, or `none`
+```
+
+Each one silently defaulting is a different silent failure: an unnamed
+service, an index nobody chose, or a service that writes perfect JSONL to disk
+and ships none of it. Naming them is a deployment decision, so it is made
+explicitly or the service refuses to start.
+
+The rest have sensible defaults:
+
+```bash
+export AUDIT_ENVIRONMENT=prod
+export AUDIT_LOG_DIR=/var/log/fortress
 export AUDIT_ELASTICSEARCH_USERNAME=elastic
 export AUDIT_ELASTICSEARCH_PASSWORD=...
 ```
@@ -100,8 +115,9 @@ until the field count explodes and is fixable only by a reindex.
 
 ### Using Filebeat instead
 
-If you already run Filebeat, leave `AUDIT_ELASTICSEARCH_URL` unset and no HTTP
-client is even imported. Point Filebeat at `AUDIT_LOG_DIR`.
+If you already run Filebeat, set `AUDIT_ELASTICSEARCH_URL=none` and no HTTP
+client is even imported. It has to be said rather than omitted — a forgotten
+variable and a deliberate Filebeat deployment used to look identical. Point Filebeat at `AUDIT_LOG_DIR`.
 
 The Filebeat config, the Kubernetes DaemonSet and the template installer live
 in the [repository](https://github.com/ShahzodAbdashev/audit-me) under
@@ -136,7 +152,7 @@ On Kubernetes, mount the log directory into your app pod:
 ```yaml
 volumeMounts:
   - name: audit-logs
-    mountPath: /var/log/audit
+    mountPath: /var/log/fortress
     subPathExpr: $(POD_NAME)
 ```
 
@@ -153,23 +169,25 @@ and Filebeat's Elasticsearch role must **not** hold `manage_index_templates` —
 
 | Variable | Default | |
 |---|---|---|
-| `AUDIT_SERVICE_NAME` | **required** | Names the service and the index |
+| `AUDIT_SERVICE_NAME` | **required** | Goes on every record as `service.name` |
+| `AUDIT_DATASET` | **required** | The index: `logs-<dataset>-<namespace>`. Share it to collect services |
+| `AUDIT_ELASTICSEARCH_URL` | **required** | Where the shipper posts, or `none` to ship with Filebeat |
 | `AUDIT_ENVIRONMENT` | `dev` | `prod`, `staging`, … |
-| `AUDIT_LOG_DIR` | `/var/log/audit` | Where JSONL is written |
+| `AUDIT_LOG_DIR` | `/var/log/fortress` | Where JSONL is written |
 | `AUDIT_ENABLED` | `true` | **`false` turns everything off.** Your kill switch |
 | `AUDIT_EXTRA_REDACT_KEYS` | — | Extra keys to redact: `email,phone,national_id` |
 | `AUDIT_SERVICE_VERSION` | `unknown` | Recorded on every record |
 
-**Shipping straight to Elasticsearch** (omit all of these to use Filebeat):
+**Shipping straight to Elasticsearch** (`AUDIT_ELASTICSEARCH_URL=none` to use
+Filebeat instead, which makes the rest of these irrelevant):
 
 | Variable | Default | |
 |---|---|---|
-| `AUDIT_ELASTICSEARCH_URL` | — | Set it and the package ships its own records |
 | `AUDIT_ELASTICSEARCH_USERNAME` / `_PASSWORD` | — | Basic auth |
 | `AUDIT_ELASTICSEARCH_API_KEY` | — | Base64 `id:api_key`, instead of the above |
 | `AUDIT_ELASTICSEARCH_VERIFY_CERTS` | `true` | `false` for a self-signed cluster |
 | `AUDIT_ELASTICSEARCH_SETUP` | `true` | Install the template and ILM policy on start |
-| `AUDIT_RETENTION_DAYS` | `90` | When ILM deletes. **`never` keeps everything** |
+| `AUDIT_RETENTION_DAYS` | **`never`** | Nothing is ever deleted. Set a number of days to opt in |
 | `AUDIT_ROLLOVER_MAX_AGE` | `7d` | New index every `1d` / `7d` / `30d`, or `never` for size-only |
 | `AUDIT_ROLLOVER_MAX_SIZE` | `50gb` | ...or sooner, at this size |
 
@@ -178,6 +196,7 @@ Partitioning, the four shapes people actually want:
 ```bash
 # daily indices, never deleted  — the usual choice for a compliance audit trail
 AUDIT_ROLLOVER_MAX_AGE=1d
+# AUDIT_RETENTION_DAYS is already never; shown here only to be explicit
 AUDIT_RETENTION_DAYS=never
 
 # weekly indices, kept 7 years
@@ -190,8 +209,13 @@ AUDIT_ROLLOVER_MAX_SIZE=20gb
 AUDIT_RETENTION_DAYS=never
 ```
 
-`never` (or `0`) on retention drops the delete phase from the ILM policy
-entirely. Both rollover triggers cannot be off at once &mdash; a single backing
+**Nothing is deleted by default.** The shipped ILM policy has no delete phase
+at all — `hot`, `warm`, `cold`, and there it stops. An audit trail that erases
+its own evidence on a timer is the one failure here you cannot undo, and a
+disk bill is the recoverable problem, so the default errs towards keeping.
+
+Set `AUDIT_RETENTION_DAYS` to a number and the shipper adds a delete phase
+back. `never` (or `0`, or empty) is the explicit spelling of the default. Both rollover triggers cannot be off at once &mdash; a single backing
 index would grow until Lucene's 2.1&nbsp;billion document limit stops writes,
 long past the point where reindexing is comfortable.
 | `AUDIT_SHIP_INTERVAL_SECONDS` | `2.0` | How often the shipper checks for new records |
@@ -210,7 +234,7 @@ long past the point where reindexing is comfortable.
 | `AUDIT_QUEUE_MAX_BYTES` | `67108864` | Memory bound; past it records drop and are counted |
 | `AUDIT_FILE_MAX_BYTES` | `268435456` | Rotation size |
 | `AUDIT_FILE_BACKUP_COUNT` | `8` | Files kept — with the above, ~2 GB per pod |
-| `AUDIT_DATASET` / `AUDIT_NAMESPACE` | derived | Override the index. Same dataset in several services collects them in one index |
+| `AUDIT_NAMESPACE` | `AUDIT_ENVIRONMENT` | Third part of the index name |
 | `AUDIT_CAPTURE_TEXT_BODIES` | `false` | Store non-JSON bodies — see the warning below |
 | `AUDIT_EXTRA_HEADER_ALLOWLIST` | — | Extra headers to keep |
 

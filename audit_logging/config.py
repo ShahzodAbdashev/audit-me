@@ -85,15 +85,22 @@ class AuditConfig(BaseSettings):
     #: Overrides the dataset derived from ``service_name``. This is the second
     #: half of the index name: ``logs-<dataset>-<namespace>``.
     #:
+    #: **Required.** It used to default to the sanitised ``service_name``,
+    #: which meant a service that never thought about it silently got an index
+    #: of its own — and ten services that each meant to share one ended up with
+    #: ten indices, ten templates and ten ILM policies, discovered only when
+    #: somebody went looking for the data. Naming the index is a deployment
+    #: decision, so it is made explicitly or not at all.
+    #:
     #: Set it to the *same* value in several services to collect them all in
     #: one index; they stay distinguishable by ``service.name`` on every
-    #: document. Leave it unset and each service gets its own.
+    #: document. Give each its own value to keep them apart.
     #:
     #: The index template is installed per dataset — ``logs-<dataset>``,
     #: matching ``logs-<dataset>-*`` — so the dataset is the only thing
     #: scoping it. The validator below refuses a value that would widen that
     #: pattern onto data streams this package does not own.
-    dataset: str | None = None
+    dataset: str = Field(min_length=1)
     #: Overrides the namespace, which otherwise follows ``environment``. Use it
     #: when the audit namespace and the deployment environment are not the same
     #: thing (one cluster serving several tenants, say).
@@ -107,7 +114,15 @@ class AuditConfig(BaseSettings):
     #: posts it. The file remains the durable buffer, so an Elasticsearch
     #: outage still cannot reach the application (D-13's actual purpose).
     #: Requires the ``elasticsearch`` extra: ``pip install audit-me[elasticsearch]``.
-    elasticsearch_url: str | None = None
+    #:
+    #: **Required, but may be switched off explicitly.** ``none`` (or ``off``,
+    #: or empty) means "ship with Filebeat, not from the app", exactly as
+    #: before — but it has to be *said*. Defaulting it to unset meant a
+    #: service that simply forgot the variable wrote perfectly good JSONL to
+    #: disk and shipped none of it, with no error anywhere: the failure looked
+    #: identical to a healthy Filebeat deployment right up until someone
+    #: queried the index.
+    elasticsearch_url: str | None = Field(...)
     elasticsearch_username: str | None = None
     elasticsearch_password: str | None = None
     #: Base64 ``id:api_key``. Takes precedence over username/password.
@@ -124,9 +139,12 @@ class AuditConfig(BaseSettings):
     #: ``AUDIT_RETENTION_DAYS=never`` (or ``0``, or empty) drops the delete
     #: phase from the policy entirely, which is what an audit trail under a
     #: retention obligation needs — deleting evidence on a timer is the one
-    #: failure mode you cannot recover from. 90 days is a default for the
-    #: common case, not a recommendation.
-    retention_days: int | None = 90
+    #: failure mode you cannot recover from, so **the default is never**: the
+    #: delete phase is left out of the policy entirely and nothing expires.
+    #: An audit trail that quietly erases its own evidence on a timer is worse
+    #: than one that costs disk, and the disk bill is the recoverable problem.
+    #: Set a number of days deliberately if you have a reason to.
+    retention_days: int | None = None
     #: When a new index is started. ``"1d"`` daily, ``"7d"`` weekly, ``"30d"``
     #: monthly, or **None for size-only** rollover.
     #: Indices carry the date in their name either way, and ``@timestamp``
@@ -143,7 +161,7 @@ class AuditConfig(BaseSettings):
     enabled: bool = True
 
     # --- file sink ----------------------------------------------------------
-    log_dir: Path = Path("/var/log/audit")
+    log_dir: Path = Path("/var/log/fortress")
     file_max_bytes: int = Field(default=256 * 1024 * 1024, gt=0)
     file_backup_count: int = Field(default=8, ge=0)
     fsync: bool = False
@@ -280,6 +298,19 @@ class AuditConfig(BaseSettings):
             return None
         return v
 
+    @field_validator("elasticsearch_url", mode="before")
+    @classmethod
+    def _shipping_can_be_turned_off_but_not_forgotten(cls, v: Any) -> Any:
+        """``none``/``off``/empty means Filebeat ships instead of the package.
+
+        Same spelling as ``retention_days`` and the rollover triggers. The
+        field is required, so the choice is always recorded somewhere; this
+        just gives "not from the app" a way to be written down.
+        """
+        if isinstance(v, str) and v.strip().lower() in ("", "none", "off", "false", "no"):
+            return None
+        return v
+
     @field_validator("dataset")
     @classmethod
     def _dataset_must_be_usable_in_an_index_name(cls, v: str | None) -> str | None:
@@ -353,10 +384,8 @@ class AuditConfig(BaseSettings):
 
     @property
     def data_stream_dataset(self) -> str:
-        """The sanitised ``service_name``, or the ``dataset`` override."""
-        if self.dataset is not None:
-            return self._sanitise(self.dataset)
-        return self._sanitise(self.service_name)
+        """The sanitised ``dataset``. Required, so there is nothing to fall back to."""
+        return self._sanitise(self.dataset)
 
     @property
     def data_stream_namespace(self) -> str:

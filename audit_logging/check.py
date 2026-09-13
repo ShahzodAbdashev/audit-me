@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not config.elasticsearch_url:
         print()
-        print(f"{WARN} AUDIT_ELASTICSEARCH_URL is not set, so nothing is checked in")
+        print(f"{WARN} AUDIT_ELASTICSEARCH_URL is 'none', so nothing is checked in")
         print("       Elasticsearch. That is correct if you ship with Filebeat.")
         return 1 if failures else 0
 

@@ -106,6 +106,8 @@ class Route:
 def make_config(**overrides: Any) -> AuditConfig:
     values: dict[str, Any] = {
         "service_name": "Orders-API",
+        "dataset": "orders_api",
+        "elasticsearch_url": None,
         "service_version": "1.4.2",
         "environment": "prod",
     }
@@ -629,8 +631,10 @@ def test_duration_is_zero_when_the_response_never_ended() -> None:
     assert doc["event"]["duration"] == 0
 
 
-def test_dataset_sanitises_the_service_name() -> None:
-    doc = build_document(make_ctx(), make_config(service_name="Orders API v2!"))
+def test_dataset_is_sanitised() -> None:
+    """`dataset` is required and explicit, but still has to name a data stream:
+    Elasticsearch rejects uppercase and `,\\/*?"<>|` outright."""
+    doc = build_document(make_ctx(), make_config(dataset="Orders API v2!"))
     assert doc["data_stream"]["dataset"] == "orders_api_v2_"
 
 

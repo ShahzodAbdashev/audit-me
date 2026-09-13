@@ -3,7 +3,7 @@
 #
 #     pytest writes  ${AUDIT_TEST_LOG_DIR}/orders-api-<pid>.jsonl
 #                              │   (bind mount)
-#     filebeat sees  /var/log/audit/testpod/orders-api-<pid>.jsonl
+#     filebeat sees  /var/log/fortress/testpod/orders-api-<pid>.jsonl
 #                              │   filestream + ndjson, index from data_stream.*
 #     elasticsearch  logs-<service>-<env>
 #
@@ -132,8 +132,8 @@ services:
       # A placeholder CA at the path filebeat.yml points at, so the config
       # loads. Self-signed, no private key anywhere, verifies nothing.
       - ./stack/ca.crt:/etc/filebeat/certs/ca.crt:ro
-      # The pod-name level the production glob expects: /var/log/audit/*/*.jsonl
-      - ${AUDIT_TEST_LOG_DIR:-./.stack/logs}:/var/log/audit/testpod
+      # The pod-name level the production glob expects: /var/log/fortress/*/*.jsonl
+      - ${AUDIT_TEST_LOG_DIR:-./.stack/logs}:/var/log/fortress/testpod
       # The registry, so a `docker compose restart filebeat` does not re-ship
       # every line from the start (plan R-11).
       - filebeat-data:/usr/share/filebeat/data

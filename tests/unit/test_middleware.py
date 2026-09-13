@@ -166,6 +166,8 @@ def make_app() -> FastAPI:
 def build_config(**overrides: Any) -> AuditConfig:
     values: dict[str, Any] = {
         "service_name": "test-service",
+        "dataset": "test_service",
+        "elasticsearch_url": None,
         "service_version": "0.0.1",
         "environment": "test",
         "exclude_paths": ["/health"],
@@ -1402,7 +1404,8 @@ async def test_N_13_the_shipped_defaults_still_exclude_what_they_should() -> Non
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    config = AuditConfig(service_name="t", service_version="0", environment="test")
+    config = AuditConfig(service_name="t", dataset="t", elasticsearch_url=None,
+                            service_version="0", environment="test")
     middleware = AuditMiddleware(app, config, sink, StubMetrics())
     send, _sent = collector()
     for path in ("/health", "/healthz", "/metrics", "/favicon.ico", "/docs", "/docs/oauth2"):

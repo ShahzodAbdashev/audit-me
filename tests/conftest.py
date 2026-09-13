@@ -27,6 +27,8 @@ def config(log_dir: Path) -> AuditConfig:
     """A config safe for unit tests: tiny flush interval, temp directory."""
     return AuditConfig(
         service_name="test-service",
+        dataset="test_service",
+        elasticsearch_url=None,
         service_version="0.0.1",
         environment="test",
         log_dir=log_dir,

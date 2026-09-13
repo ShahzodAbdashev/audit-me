@@ -34,7 +34,19 @@ def test_the_packaged_ilm_matches_infra_minus_its_meta_envelope() -> None:
     on_disk = json.loads((INFRA / "ilm-apiaudit.json").read_text())
     meta = on_disk.pop("_meta", {})
     assert ILM_POLICY == on_disk
-    assert DEFAULT_RETENTION_DAYS == meta.get("RETENTION_DAYS", 90)
+    assert DEFAULT_RETENTION_DAYS == meta.get("RETENTION_DAYS")
+
+
+def test_the_shipped_policy_never_deletes() -> None:
+    """The default must be "keep", and it must be keep by *absence*.
+
+    A delete phase with a very large min_age is not the same thing: it still
+    expires, just later, and the number is easy to mistake for a decision
+    somebody made. No delete phase at all is what "never" means to ILM.
+    """
+    assert DEFAULT_RETENTION_DAYS is None
+    assert "delete" not in ILM_POLICY["policy"]["phases"]
+    assert set(ILM_POLICY["policy"]["phases"]) == {"hot", "warm", "cold"}
 
 
 def test_dynamic_false_is_present_at_every_level() -> None:
@@ -97,7 +109,12 @@ def test_names_match_what_the_config_derives() -> None:
     """AuditConfig and templates.py must agree, or the shipper installs orphans."""
     from audit_logging.config import AuditConfig
 
-    config = AuditConfig(service_name="orders-api", environment="prod")
+    config = AuditConfig(
+        service_name="orders-api",
+        dataset="orders_api",
+        elasticsearch_url=None,
+        environment="prod",
+    )
     dataset = config.data_stream_dataset
     assert config.index_template_name == index_template_name_for(dataset)
     assert config.ilm_policy_name == ilm_policy_name_for(dataset)

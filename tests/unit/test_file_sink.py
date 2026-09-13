@@ -42,6 +42,8 @@ def make_config(log_dir: Path, **overrides: Any) -> AuditConfig:
     """A config tuned for tests: tiny interval, temp directory."""
     kwargs: dict[str, Any] = {
         "service_name": "test-service",
+        "dataset": "test_service",
+        "elasticsearch_url": None,
         "service_version": "0.0.1",
         "environment": "test",
         "log_dir": log_dir,
@@ -1036,7 +1038,7 @@ def test_awkward_values_stay_strictly_valid_json() -> None:
         "day": date(2024, 3, 1),
         "amount": Decimal("12.3400"),
         "tags": {"only"},
-        "path": Path("/var/log/audit"),
+        "path": Path("/var/log/fortress"),
         "nested": {"deep": [float("nan"), b"\xff", Decimal("1")]},
     }
     line = fs._dumps(document)
@@ -1808,7 +1810,7 @@ def test_S_11_the_new_name_still_matches_A5s_filebeat_globs(
     tmp_path: Path, rotation: str
 ) -> None:
     """`infra/filebeat/filebeat.yml`: the input glob is
-    `/var/log/audit/*/*.jsonl` and `prospector.scanner.exclude_files` drops
+    `/var/log/fortress/*/*.jsonl` and `prospector.scanner.exclude_files` drops
     `\\.jsonl\\.\\d+$`. A tokenised name must behave identically."""
     import fnmatch
     import re

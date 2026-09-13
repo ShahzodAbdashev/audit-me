@@ -63,8 +63,11 @@ def index_template_for(dataset: str) -> dict[str, Any]:
     bound = json.loads(json.dumps(INDEX_TEMPLATE).replace(DATASET_PLACEHOLDER, dataset))
     return dict(bound)
 
-#: The one retention knob. ``AuditConfig.retention_days`` overrides it.
-DEFAULT_RETENTION_DAYS = 90
+#: The one retention knob. ``None`` means **never delete**, which is the
+#: shipped default and why :data:`ILM_POLICY` carries no ``delete`` phase.
+#: ``AuditConfig.retention_days`` overrides it; the shipper adds a delete
+#: phase back when it is a number.
+DEFAULT_RETENTION_DAYS: int | None = None
 
 INDEX_TEMPLATE: dict[str, Any] = {   'index_patterns': ['logs-{dataset}-*'],
     'priority': 500,
@@ -218,8 +221,7 @@ ILM_POLICY: dict[str, Any] = {   'policy': {   '_meta': {   'package': 'audit_lo
                                                            'allocate': {   'number_of_replicas': 1},
                                                            'forcemerge': {   'max_num_segments': 1},
                                                            'readonly': {}}},
-                                'cold': {   'min_age': '30d',
+                                'cold': {   'min_age': '14d',
                                             'actions': {   'set_priority': {   'priority': 0},
                                                            'allocate': {   'number_of_replicas': 0}}},
-                                'delete': {   'min_age': '90d',
-                                              'actions': {   'delete': {   'delete_searchable_snapshot': False}}}}}}
+                                }}}

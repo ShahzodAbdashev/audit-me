@@ -53,7 +53,12 @@ BUDGET_MS = 5.0
 
 
 def _config(**overrides: Any) -> AuditConfig:
-    values: dict[str, Any] = {"service_name": "adversarial", "log_dir": "/tmp/audit-adv"}
+    values: dict[str, Any] = {
+        "service_name": "adversarial",
+        "dataset": "adversarial",
+        "elasticsearch_url": None,
+        "log_dir": "/tmp/audit-adv",
+    }
     values.update(overrides)
     return AuditConfig(**values)
 

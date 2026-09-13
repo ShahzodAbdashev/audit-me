@@ -11,7 +11,7 @@ from audit_logging.config import MAX_ALLOWED_BODY_BYTES, AuditConfig
 
 
 def test_defaults_match_the_plan() -> None:
-    c = AuditConfig(service_name="orders-api")
+    c = AuditConfig(elasticsearch_url=None, dataset="ds", service_name="orders-api")
     assert c.enabled is True
     assert c.max_body_bytes == 1_048_576          # D-4
     assert c.queue_max_bytes == 64 * 1024 * 1024  # D-9 / FR-18
@@ -21,44 +21,64 @@ def test_defaults_match_the_plan() -> None:
     assert c.file_max_bytes == 256 * 1024 * 1024  # §5
     assert c.file_backup_count == 8
     assert c.fsync is False
-    assert c.log_dir == Path("/var/log/audit")
+    assert c.log_dir == Path("/var/log/fortress")
     assert "/health" in c.exclude_paths and "/metrics" in c.exclude_paths
 
 
-def test_service_name_is_required() -> None:
-    with pytest.raises(ValidationError):
+def test_the_three_deployment_decisions_are_required() -> None:
+    """service_name, dataset and elasticsearch_url have no defaults.
+
+    Each one silently defaulting is a different silent failure: an unnamed
+    service, an index nobody chose, or a service that writes perfect JSONL and
+    ships none of it. A missing one has to stop the process at startup.
+    """
+    with pytest.raises(ValidationError) as exc:
         AuditConfig()  # type: ignore[call-arg]
+    missing = {".".join(str(x) for x in e["loc"]) for e in exc.value.errors()}
+    assert missing == {"service_name", "dataset", "elasticsearch_url"}
+
+
+@pytest.mark.parametrize("off", ["none", "off", "", "NONE", " none "])
+def test_shipping_can_be_declined_but_not_omitted(off: str) -> None:
+    """Filebeat deployments say so explicitly, in the same spelling as the
+    other opt-outs (`retention_days=never`, `rollover_max_age=none`)."""
+    c = AuditConfig(service_name="s", dataset="ds", elasticsearch_url=off)
+    assert c.elasticsearch_url is None
 
 
 @pytest.mark.parametrize("bad", [0, -1, MAX_ALLOWED_BODY_BYTES + 1])
 def test_max_body_bytes_bounds(bad: int) -> None:
     with pytest.raises(ValidationError):
-        AuditConfig(service_name="s", max_body_bytes=bad)
+        AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s", max_body_bytes=bad)
 
 
 def test_max_body_bytes_accepts_the_ceiling() -> None:
-    assert AuditConfig(service_name="s", max_body_bytes=MAX_ALLOWED_BODY_BYTES).max_body_bytes
+    assert AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s", max_body_bytes=MAX_ALLOWED_BODY_BYTES).max_body_bytes
 
 
 def test_queue_must_be_at_least_one_flush() -> None:
     with pytest.raises(ValidationError):
-        AuditConfig(service_name="s", queue_max_bytes=1024, flush_max_bytes=2048)
-    AuditConfig(service_name="s", queue_max_bytes=2048, flush_max_bytes=2048)
+        AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s", queue_max_bytes=1024, flush_max_bytes=2048)
+    AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s", queue_max_bytes=2048, flush_max_bytes=2048)
 
 
 def test_unknown_field_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        AuditConfig(service_name="s", sampling_rate=0.1)  # type: ignore[call-arg]
+        AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s", sampling_rate=0.1)  # type: ignore[call-arg]
 
 
 def test_FR_15_kill_switch_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "orders-api")
+    monkeypatch.setenv("AUDIT_DATASET", "ds")
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_ENABLED", "false")
     assert AuditConfig().enabled is False
 
 
 def test_env_prefix_loads_every_kind_of_field(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "billing")
+    monkeypatch.setenv("AUDIT_DATASET", "ds")
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_MAX_BODY_BYTES", "2048")
     monkeypatch.setenv("AUDIT_FSYNC", "true")
     monkeypatch.setenv("AUDIT_FLUSH_INTERVAL_SECONDS", "0.25")
@@ -77,26 +97,31 @@ def test_list_fields_accept_csv_and_json(
     monkeypatch: pytest.MonkeyPatch, raw: str, expected: list[str]
 ) -> None:
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "s")
+    monkeypatch.setenv("AUDIT_DATASET", "ds")
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_EXCLUDE_PATHS", raw)
     assert AuditConfig().exclude_paths == expected
 
 
 @pytest.mark.parametrize(
-    "name, dataset",
+    "raw, sanitised",
     [
-        ("orders-api", "orders_api"),
+        ("orders_api", "orders_api"),
         ("Orders API", "orders_api"),
         ("billing.v2", "billing.v2"),
-        ("SVC/../etc", "svc_.._etc"),
+        ("SVC/..", "svc_.."),
     ],
 )
-def test_data_stream_dataset_is_sanitised(name: str, dataset: str) -> None:
-    assert AuditConfig(service_name=name).data_stream_dataset == dataset
+def test_data_stream_dataset_is_sanitised(raw: str, sanitised: str) -> None:
+    """Explicit, but still not passed through: Elasticsearch rejects a data
+    stream name with uppercase or `,\\/*?"<>|` or a space."""
+    c = AuditConfig(service_name="s", dataset=raw, elasticsearch_url=None)
+    assert c.data_stream_dataset == sanitised
 
 
 def test_user_resolver_is_callable_and_optional() -> None:
-    assert AuditConfig(service_name="s").user_resolver is None
-    c = AuditConfig(service_name="s", user_resolver=lambda scope: {"id": "u1"})
+    assert AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s").user_resolver is None
+    c = AuditConfig(elasticsearch_url=None, dataset="ds", service_name="s", user_resolver=lambda scope: {"id": "u1"})
     assert c.user_resolver is not None
     assert c.user_resolver({}) == {"id": "u1"}
 
@@ -106,15 +131,18 @@ def test_user_resolver_is_callable_and_optional() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_FR_33_index_name_is_derived_from_service_and_environment() -> None:
-    c = AuditConfig(service_name="Orders API", environment="prod")
+def test_FR_33_index_name_is_built_from_dataset_and_environment() -> None:
+    c = AuditConfig(
+        service_name="Orders API", dataset="orders_api",
+        elasticsearch_url=None, environment="prod",
+    )
     assert c.data_stream_dataset == "orders_api"
     assert c.data_stream_namespace == "prod"
     assert c.index_name == "logs-orders_api-prod"
 
 
 def test_FR_33_dataset_and_namespace_can_be_overridden() -> None:
-    c = AuditConfig(service_name="anything", dataset="billing", namespace="tenant-a")
+    c = AuditConfig(service_name="anything", elasticsearch_url=None, dataset="billing", namespace="tenant-a")
     assert c.index_name == "logs-billing-tenant_a"
 
 
@@ -124,8 +152,8 @@ def test_FR_33_several_services_can_share_one_index() -> None:
     They stay distinguishable by `service.name`, which every document carries
     as an indexed keyword.
     """
-    orders = AuditConfig(service_name="orders-api", dataset="platform", environment="prod")
-    payments = AuditConfig(service_name="payments-api", dataset="platform", environment="prod")
+    orders = AuditConfig(service_name="orders-api", elasticsearch_url=None, dataset="platform", environment="prod")
+    payments = AuditConfig(service_name="payments-api", elasticsearch_url=None, dataset="platform", environment="prod")
     assert orders.index_name == payments.index_name == "logs-platform-prod"
     assert orders.index_template_name == payments.index_template_name == "logs-platform"
 
@@ -142,12 +170,15 @@ def test_FR_33_a_dataset_that_would_widen_the_template_is_refused(bad: str) -> N
     every layer, so it has to be refused here.
     """
     with pytest.raises(ValidationError):
-        AuditConfig(service_name="s", dataset=bad)
+        AuditConfig(service_name="s", elasticsearch_url=None, dataset=bad)
 
 
 def test_FR_33_template_and_policy_names_are_scoped_to_the_dataset() -> None:
     """Two datasets must not share a template, or the last one to start wins."""
-    c = AuditConfig(service_name="orders-api", environment="prod")
+    c = AuditConfig(
+        service_name="orders-api", dataset="orders_api",
+        elasticsearch_url=None, environment="prod",
+    )
     assert c.index_template_name == "logs-orders_api"
     assert c.index_template_pattern == "logs-orders_api-*"
     assert c.ilm_policy_name == "orders_api-ilm"
@@ -156,12 +187,13 @@ def test_FR_33_template_and_policy_names_are_scoped_to_the_dataset() -> None:
 def test_FR_33_overrides_are_sanitised_like_the_derived_form() -> None:
     """Elasticsearch rejects a data stream name with uppercase or `,\\\\/*?"<>|`
     or a space, so an override cannot be passed through unchecked."""
-    c = AuditConfig(service_name="s", dataset="Billing V2", namespace="Tenant A")
+    c = AuditConfig(service_name="s", elasticsearch_url=None, dataset="Billing V2", namespace="Tenant A")
     assert c.index_name == "logs-billing_v2-tenant_a"
 
 
 def test_FR_33_env_vars_reach_the_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "s")
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_DATASET", "custom")
     monkeypatch.setenv("AUDIT_NAMESPACE", "staging")
     assert AuditConfig().index_name == "logs-custom-staging"
@@ -206,6 +238,8 @@ def test_list_fields_accept_csv_from_the_environment(
     complex, so `/health,/metrics` failed before a validator could see it.
     """
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "s")
+    monkeypatch.setenv("AUDIT_DATASET", "ds")
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_EXCLUDE_PATHS", "/health,/metrics,/live")
     monkeypatch.setenv("AUDIT_EXTRA_REDACT_KEYS", "email,phone")
     c = AuditConfig()

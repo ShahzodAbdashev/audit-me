@@ -407,13 +407,18 @@ class ElasticsearchShipper:
             policy = json.loads(json.dumps(ILM_POLICY))
             phases = policy["policy"]["phases"]
             if self.config.retention_days is None:
-                # Keep forever: drop the delete phase, and the cold phase's
-                # min_age with it is fine — ILM simply never deletes. An audit
-                # trail that erases itself on a timer is worse than one that
-                # costs disk.
+                # Keep forever, which is the shipped default: ILM simply never
+                # deletes. An audit trail that erases itself on a timer is
+                # worse than one that costs disk. The template carries no
+                # delete phase, so usually there is nothing to remove — the
+                # pop is for an operator-supplied policy that has one.
                 phases.pop("delete", None)
             else:
-                phases["delete"]["min_age"] = f"{self.config.retention_days}d"
+                # Added back rather than edited in place: the shipped policy
+                # has no delete phase at all, because never is the default.
+                phases.setdefault(
+                    "delete", {"actions": {"delete": {"delete_searchable_snapshot": False}}}
+                )["min_age"] = f"{self.config.retention_days}d"
             rollover = phases["hot"]["actions"]["rollover"]
             rollover.pop("max_age", None)
             rollover.pop("max_primary_shard_size", None)

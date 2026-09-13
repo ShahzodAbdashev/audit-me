@@ -2,11 +2,11 @@
 # Filebeat 8.x — ships audit_logging JSONL to the audit data streams.
 #
 # The package writes {log_dir}/{service_name}-{pid}.jsonl (FR-26) and each pod
-# mounts /var/log/audit read-write under its own $POD_NAME subdirectory
+# mounts /var/log/fortress read-write under its own $POD_NAME subdirectory
 # (plan §4.3), so on the node the tree is:
 #
-#     /var/log/audit/<pod-name>/<service>-<pid>.jsonl
-#     /var/log/audit/<pod-name>/<service>-<pid>.jsonl.1   ... .8   (rotated, FR-22)
+#     /var/log/fortress/<pod-name>/<service>-<pid>.jsonl
+#     /var/log/fortress/<pod-name>/<service>-<pid>.jsonl.1   ... .8   (rotated, FR-22)
 #
 # Filebeat owns nothing in Elasticsearch: the index template and the ILM policy
 # are installed by infra/elasticsearch/bootstrap.py. Both setup paths below are
@@ -82,7 +82,7 @@ filebeat.inputs:
     id: audit-logging-jsonl          # stable: the registry is keyed on this
     enabled: true
     paths:
-      - /var/log/audit/*/*.jsonl
+      - /var/log/fortress/*/*.jsonl
       # Rotated files ARE globbed, and this is a fix, not an oversight
       # (review S-13). The previous config excluded '\.jsonl\.\d+$' and
       # justified it with "filestream follows an open file across the rename".
@@ -99,7 +99,7 @@ filebeat.inputs:
       # path, and resumes at the stored offset. Duplication would only happen
       # under file_identity.path — which is why it is pinned explicitly below
       # rather than left to the default.
-      - /var/log/audit/*/*.jsonl.[0-9]
+      - /var/log/fortress/*/*.jsonl.[0-9]
 
     prospector.scanner.exclude_files: ['\.gz$', '\.tmp$']
 
@@ -347,7 +347,7 @@ setup.template.pattern: "logs-${AUDIT_DATASET:audit}-*"
 # This is a *second* buffer, not the only one: the JSONL files on the node are
 # the primary one (file_max_bytes 256 MB x file_backup_count 8 = 2 GB per pod,
 # plan §5). When the disk queue fills, Filebeat stops reading and the files
-# hold the backlog until rotation eats it. Size the node's /var/log/audit for
+# hold the backlog until rotation eats it. Size the node's /var/log/fortress for
 # 2 GB x (audited pods per node) independently of the number below.
 #
 # segment_size is NOT cosmetic. diskqueue.handleProducerWriteRequest

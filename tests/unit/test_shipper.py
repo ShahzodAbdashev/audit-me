@@ -22,6 +22,7 @@ from audit_logging.shipper import ElasticsearchShipper, _pid_is_alive
 def cfg(tmp_path: Path, **kw: Any) -> AuditConfig:
     values: dict[str, Any] = {
         "service_name": "ship-api",
+        "dataset": "ship_api",
         "log_dir": tmp_path,
         "elasticsearch_url": "http://127.0.0.1:59999",  # nothing listens here
         "ship_interval_seconds": 0.05,
@@ -204,7 +205,9 @@ async def test_FR_35_a_rejected_document_does_not_block_the_ones_behind_it(
 
 def test_FR_35_no_shipper_without_a_url(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="elasticsearch_url"):
-        ElasticsearchShipper(AuditConfig(service_name="s", log_dir=tmp_path))
+        ElasticsearchShipper(
+            AuditConfig(service_name="s", dataset="s", elasticsearch_url=None, log_dir=tmp_path)
+        )
 
 
 async def test_rollover_and_retention_reach_the_installed_policy(tmp_path: Path) -> None:
@@ -291,7 +294,7 @@ def test_both_rollover_triggers_off_is_refused(tmp_path: Path) -> None:
     document limit and then refuses writes, far too late to reindex."""
     with pytest.raises(ValidationError, match="cannot both be disabled"):
         AuditConfig(
-            service_name="s", log_dir=tmp_path,
+            service_name="s", dataset="s", elasticsearch_url=None, log_dir=tmp_path,
             rollover_max_age=None, rollover_max_size=None,
         )
 

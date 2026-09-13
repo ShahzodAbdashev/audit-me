@@ -147,6 +147,8 @@ def build_config(log_dir: Path, **overrides: Any) -> AuditConfig:
     """A config sane for an integration test: temp dir, quick flush."""
     values: dict[str, Any] = {
         "service_name": "orders-api",
+        "dataset": "orders_api",
+        "elasticsearch_url": None,
         "service_version": "1.4.2",
         "environment": "test",
         "log_dir": log_dir,

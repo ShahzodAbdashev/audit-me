@@ -44,7 +44,11 @@ def resolve_user(scope: dict[str, Any]) -> dict[str, Any] | None:
 app = FastAPI(title="orders-api (audit demo)")
 
 config = AuditConfig(
+    # The three with no defaults: an unnamed service, an index nobody chose,
+    # and a shipper nobody decided on are each a different silent failure.
     service_name="orders-api",
+    dataset="orders_api",
+    elasticsearch_url=os.environ.get("AUDIT_ELASTICSEARCH_URL", "none"),
     service_version="1.4.2",
     environment=os.environ.get("AUDIT_ENVIRONMENT", "demo"),
     log_dir=LOG_DIR,

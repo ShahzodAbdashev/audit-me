@@ -541,6 +541,9 @@ async def test_AC_11_kill_switch_produces_no_document_and_no_file(
     """`AUDIT_ENABLED=false` from the environment, as a restart would set it."""
     monkeypatch.setenv("AUDIT_ENABLED", "false")
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "orders-api")
+    monkeypatch.setenv("AUDIT_DATASET", "orders_api")
+    # Required, and "none" is how a Filebeat deployment says so.
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_LOG_DIR", str(audit_log_dir))
     config = AuditConfig()  # type: ignore[call-arg]  # everything comes from env
     assert config.enabled is False
@@ -1977,7 +1980,7 @@ def test_FR_26_both_name_forms_survive_filebeats_glob_and_rotation_exclude(
 ) -> None:
     """Either name must be picked up, and neither must be picked up when rotated.
 
-    ``infra/filebeat/filebeat.yml`` globs ``/var/log/audit/*/*.jsonl`` (plus
+    ``infra/filebeat/filebeat.yml`` globs ``/var/log/fortress/*/*.jsonl`` (plus
     ``*.jsonl.[0-9]`` deliberately, review S-13) and its rotation pattern is
     ``\\.jsonl\\.\\d+$``. A suffix that broke either would silently stop
     shipping every line the contending sink writes — the exact failure S-11 was

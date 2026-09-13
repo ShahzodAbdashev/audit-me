@@ -361,6 +361,8 @@ async def stack(
     ) -> StackApp:
         values: dict[str, Any] = {
             "service_name": service_name,
+            "dataset": DATASET,
+            "elasticsearch_url": None,   # the stack's Filebeat ships these
             "service_version": "1.4.2",
             "environment": namespace,
             "log_dir": stack_log_dir,
@@ -864,6 +866,8 @@ async def test_AC_10_fifty_endpoints_two_hundred_requests_stay_under_the_bound(
     endpoints, per_endpoint = 50, 200
     config = AuditConfig(
         service_name="wide-api",
+        dataset=DATASET,
+        elasticsearch_url=None,
         service_version="1.0.0",
         environment=namespace,
         log_dir=stack_log_dir,
@@ -943,6 +947,8 @@ async def test_AC_11_kill_switch_produces_no_document_and_no_file(
 ) -> None:
     monkeypatch.setenv("AUDIT_ENABLED", "false")
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "killed-api")
+    monkeypatch.setenv("AUDIT_DATASET", DATASET)
+    monkeypatch.setenv("AUDIT_ELASTICSEARCH_URL", "none")
     monkeypatch.setenv("AUDIT_ENVIRONMENT", namespace)
     monkeypatch.setenv("AUDIT_LOG_DIR", str(stack_log_dir))
     config = AuditConfig()  # type: ignore[call-arg]
@@ -1113,6 +1119,8 @@ async def test_AC_15_a_thousand_documents_land_within_the_interval(
 
     config = AuditConfig(
         service_name="burst-api",
+        dataset=DATASET,
+        elasticsearch_url=None,
         service_version="1.0.0",
         environment=namespace,
         log_dir=stack_log_dir,

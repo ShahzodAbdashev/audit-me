@@ -974,7 +974,7 @@ class FileSink(Sink):
         with no ``subPathExpr``, a PID namespace collision).
 
         The first sink keeps FR-26's name verbatim, so the documented name,
-        A5's ``/var/log/audit/*/*.jsonl`` glob and its ``\\.jsonl\\.\\d+$``
+        A5's ``/var/log/fortress/*/*.jsonl`` glob and its ``\\.jsonl\\.\\d+$``
         rotation exclude all keep working unchanged. Only a *contending* sink
         takes ``{service}-{pid}-{token}.jsonl``, which matches the same glob
         and is excluded by the same regex once rotated.
