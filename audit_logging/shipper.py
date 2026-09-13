@@ -56,7 +56,12 @@ _LOG = logging.getLogger("audit_logging.shipper")
 #: ``{service}-{pid}.jsonl`` and its rotations ``.1`` … ``.N``.
 _FILENAME = re.compile(r"^(?P<service>.+)-(?P<pid>\d+)\.jsonl(?:\.(?P<gen>\d+))?$")
 
-_STATE_FILE = ".audit-shipper-state.json"
+#: Progress is per **process**, not per directory. Several uvicorn workers
+#: share a log directory, and a single shared file was being overwritten by
+#: each of them from its own in-memory copy every tick — so workers clobbered
+#: each other's offsets, which means records re-shipped or skipped. One file
+#: per pid removes the sharing entirely.
+_STATE_FILE = ".audit-shipper-{pid}.json"
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -89,9 +94,11 @@ class ElasticsearchShipper:
         self._stopping = asyncio.Event()
         self._client: Any = None
         self._state: dict[str, int] = {}
-        self._state_path = Path(config.log_dir) / _STATE_FILE
+        self._state_path = Path(config.log_dir) / _STATE_FILE.format(pid=os.getpid())
+        self._state_dirty = False
         self._bootstrapped = False
         self._logged: set[str] = set()
+        self._orphans: dict[str, Any] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -169,9 +176,32 @@ class ElasticsearchShipper:
             if match is None:
                 continue
             pid = int(match.group("pid"))
-            if pid == mine or not _pid_is_alive(pid):
+            if pid == mine:
+                claimed.append(path)
+            elif not _pid_is_alive(pid) and self._claim_orphan(path):
                 claimed.append(path)
         return claimed
+
+    def _claim_orphan(self, path: Path) -> bool:
+        """Take an exclusive flock on a dead worker's file.
+
+        Every live worker can see an orphan, and without this they would all
+        ship it — one copy of those records per worker. The lock is held for
+        the life of this process and released by the kernel if it dies, so a
+        second crash cannot strand the file permanently.
+        """
+        key = str(path)
+        if key in self._orphans:
+            return True
+        try:
+            import fcntl
+
+            handle = path.open("rb")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except Exception:  # noqa: BLE001 - another worker holds it, or no fcntl
+            return False
+        self._orphans[key] = handle
+        return True
 
     # -- progress ----------------------------------------------------------
 
@@ -191,10 +221,15 @@ class ElasticsearchShipper:
             self._state = {}
 
     def _save_state(self) -> None:
+        # Only when something moved. This used to rewrite every tick forever,
+        # so an idle service still churned the file every few seconds.
+        if not self._state_dirty:
+            return
         try:
             tmp = self._state_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._state))
             os.replace(tmp, self._state_path)
+            self._state_dirty = False
         except Exception as exc:  # noqa: BLE001
             self._warn_once("could not persist shipper state", exc)
 
@@ -234,6 +269,7 @@ class ElasticsearchShipper:
                 if await self._bulk(lines):
                     offset += consumed
                     self._state[key] = offset
+                    self._state_dirty = True
                     self._save_state()
                 else:
                     break  # leave the offset; retry the same lines next tick

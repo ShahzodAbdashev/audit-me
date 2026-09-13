@@ -294,3 +294,49 @@ def test_both_rollover_triggers_off_is_refused(tmp_path: Path) -> None:
             service_name="s", log_dir=tmp_path,
             rollover_max_age=None, rollover_max_size=None,
         )
+
+
+async def test_state_is_per_process_not_per_directory(tmp_path: Path) -> None:
+    """Several uvicorn workers share a log directory.
+
+    A single shared state file was overwritten by each worker from its own
+    in-memory copy every tick, so they clobbered each other's offsets —
+    records re-shipped or skipped, and the file churned constantly.
+    """
+    import os
+
+    a = ElasticsearchShipper(cfg(tmp_path))
+    assert str(os.getpid()) in a._state_path.name
+
+
+async def test_state_is_only_written_when_it_changed(tmp_path: Path) -> None:
+    """An idle service rewrote this file every tick, forever."""
+    import os
+
+    write_log(tmp_path, os.getpid(), 2)
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    shipper._client = FakeClient()
+    shipper._bootstrapped = True
+    await shipper._tick()
+    assert shipper._state_path.exists()
+    first = shipper._state_path.stat().st_mtime_ns
+
+    await shipper._tick()          # nothing new to ship
+    await shipper._tick()
+    assert shipper._state_path.stat().st_mtime_ns == first, "rewrote an unchanged file"
+
+
+async def test_only_one_worker_adopts_an_orphaned_file(tmp_path: Path) -> None:
+    """Otherwise every live worker ships a dead worker's file — one copy each."""
+    dead = 2**22 - 1
+    write_log(tmp_path, dead, 3)
+
+    a = ElasticsearchShipper(cfg(tmp_path))
+    b = ElasticsearchShipper(cfg(tmp_path))
+    claimed_a = {p.name for p in a._claimable_files()}
+    claimed_b = {p.name for p in b._claimable_files()}
+
+    orphan = f"ship-api-{dead}.jsonl"
+    assert (orphan in claimed_a) != (orphan in claimed_b), (
+        "exactly one shipper must take the orphan, not both and not neither"
+    )
