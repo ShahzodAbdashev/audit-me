@@ -63,6 +63,9 @@ _FILENAME = re.compile(r"^(?P<service>.+)-(?P<pid>\d+)\.jsonl(?:\.(?P<gen>\d+))?
 #: per pid removes the sharing entirely.
 _STATE_FILE = ".audit-shipper-{pid}.json"
 
+#: What versions before the per-process split wrote. Read once, never written.
+_LEGACY_STATE_FILE = ".audit-shipper-state.json"
+
 
 def _pid_is_alive(pid: int) -> bool:
     """True if a process with this id exists. Never raises."""
@@ -160,7 +163,39 @@ class ElasticsearchShipper:
                 return
         for path in self._claimable_files():
             await self._ship_file(path)
+        self._prune()
         self._save_state()
+
+    def _prune(self) -> None:
+        """Forget files that no longer exist, and drop their locks.
+
+        Both of these grow by one entry per file and never shrink otherwise.
+        Rotation deletes files continuously — with daily rollover and no
+        retention limit that is a new entry every day, forever, in a file
+        rewritten on every change.
+        """
+        # Keyed on what EXISTS, not on what this worker can currently claim.
+        # Another live worker's file is not claimable by us, but its offset
+        # must survive: when that worker dies we adopt its file, and a pruned
+        # offset would restart it from zero and duplicate every record in it.
+        log_dir = Path(self.config.log_dir)
+        present = {
+            k
+            for k in (self._key(p) for p in log_dir.glob("*.jsonl*"))
+            if k is not None
+        }
+        gone = [k for k in self._state if k not in present]
+        for key in gone:
+            del self._state[key]
+        if gone:
+            self._state_dirty = True
+
+        for name in [n for n in self._orphans if not Path(n).exists()]:
+            handle = self._orphans.pop(name)
+            try:
+                handle.close()   # releases the flock
+            except Exception:  # noqa: BLE001
+                pass
 
     # -- which files are ours ---------------------------------------------
 
@@ -217,8 +252,27 @@ class ElasticsearchShipper:
     def _load_state(self) -> None:
         try:
             self._state = json.loads(self._state_path.read_text())
+            return
         except Exception:  # noqa: BLE001 - a missing or corrupt file starts fresh
             self._state = {}
+        # No per-process file yet. Before adopting the empty state, inherit any
+        # offsets from the single shared file older versions wrote: starting
+        # from zero would re-read every existing JSONL file from the beginning
+        # and duplicate every record already in the index. Keys are
+        # (device, inode) either way, so entries for another worker's files are
+        # simply never looked up.
+        legacy = Path(self.config.log_dir) / _LEGACY_STATE_FILE
+        try:
+            inherited = json.loads(legacy.read_text())
+        except Exception:  # noqa: BLE001
+            return
+        if isinstance(inherited, dict):
+            self._state = {k: int(v) for k, v in inherited.items() if isinstance(v, int)}
+            _LOG.info(
+                "audit_logging shipper: inherited %d offset(s) from %s",
+                len(self._state),
+                _LEGACY_STATE_FILE,
+            )
 
     def _save_state(self) -> None:
         # Only when something moved. This used to rewrite every tick forever,

@@ -340,3 +340,81 @@ async def test_only_one_worker_adopts_an_orphaned_file(tmp_path: Path) -> None:
     assert (orphan in claimed_a) != (orphan in claimed_b), (
         "exactly one shipper must take the orphan, not both and not neither"
     )
+
+
+async def test_upgrading_inherits_offsets_instead_of_reshipping(tmp_path: Path) -> None:
+    """The per-process split must not duplicate everything already indexed.
+
+    Older versions wrote one shared `.audit-shipper-state.json`. Without
+    inheriting it, the first tick after an upgrade reads every existing file
+    from offset 0 and re-sends every record already in Elasticsearch.
+    """
+    import os
+
+    path = write_log(tmp_path, os.getpid(), 5)
+    already = path.stat().st_size
+    key = f"{path.stat().st_dev}:{path.stat().st_ino}"
+    (tmp_path / ".audit-shipper-state.json").write_text(json.dumps({key: already}))
+
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    client = FakeClient()
+    shipper._client = client
+    shipper._bootstrapped = True
+    shipper._load_state()
+    await shipper._tick()
+    assert client.lines == [], "re-shipped records that were already sent"
+
+
+async def test_a_fresh_install_with_no_legacy_file_still_ships(tmp_path: Path) -> None:
+    """The inheritance must not swallow a genuinely new file."""
+    import os
+
+    write_log(tmp_path, os.getpid(), 3)
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    client = FakeClient()
+    shipper._client = client
+    shipper._bootstrapped = True
+    shipper._load_state()
+    await shipper._tick()
+    assert [d["n"] for d in client.lines] == [0, 1, 2]
+
+
+async def test_state_forgets_files_that_no_longer_exist(tmp_path: Path) -> None:
+    """Rotation deletes files constantly. Without pruning, the state file grows
+    by one entry per file forever — daily rollover with no retention means a
+    new entry every day, in a file rewritten on every change."""
+    import os
+
+    path = write_log(tmp_path, os.getpid(), 2)
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    shipper._client = FakeClient()
+    shipper._bootstrapped = True
+    await shipper._tick()
+    assert len(shipper._state) == 1
+
+    path.unlink()
+    await shipper._tick()
+    assert shipper._state == {}, "kept an offset for a file that is gone"
+
+
+async def test_pruning_keeps_another_live_workers_offset(tmp_path: Path) -> None:
+    """Prune on existence, not on claimability.
+
+    Another live worker's file is not claimable by us — but when that worker
+    dies we adopt it, and a pruned offset restarts it from zero and duplicates
+    every record it holds.
+    """
+    import os
+
+    write_log(tmp_path, os.getpid(), 2)
+    other = write_log(tmp_path, 1, 4)          # pid 1 is alive everywhere
+    other_key = f"{other.stat().st_dev}:{other.stat().st_ino}"
+
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    shipper._client = FakeClient()
+    shipper._bootstrapped = True
+    shipper._state[other_key] = 999            # as if inherited
+    await shipper._tick()
+
+    assert other_key in shipper._state, "dropped a live worker's offset"
+    assert shipper._state[other_key] == 999
