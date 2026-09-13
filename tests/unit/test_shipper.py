@@ -204,3 +204,28 @@ async def test_FR_35_a_rejected_document_does_not_block_the_ones_behind_it(
 def test_FR_35_no_shipper_without_a_url(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="elasticsearch_url"):
         ElasticsearchShipper(AuditConfig(service_name="s", log_dir=tmp_path))
+
+
+async def test_rollover_and_retention_reach_the_installed_policy(tmp_path: Path) -> None:
+    """The knobs are useless if the shipper installs the file's defaults."""
+    import os
+
+    write_log(tmp_path, os.getpid(), 1)
+    sent: list[dict] = []
+
+    class Capturing(FakeClient):
+        async def put(self, path: str, **kw: Any) -> FakeResponse:
+            self.puts.append(path)
+            if "_ilm" in path:
+                sent.append(kw["json"])
+            return FakeResponse()
+
+    shipper = ElasticsearchShipper(
+        cfg(tmp_path, rollover_max_age="1d", rollover_max_size="10gb", retention_days=30)
+    )
+    shipper._client = Capturing()
+    await shipper._tick()
+    hot = sent[0]["policy"]["phases"]["hot"]["actions"]["rollover"]
+    assert hot["max_age"] == "1d"
+    assert hot["max_primary_shard_size"] == "10gb"
+    assert sent[0]["policy"]["phases"]["delete"]["min_age"] == "30d"

@@ -123,6 +123,8 @@ and Filebeat's Elasticsearch role must **not** hold `manage_index_templates` —
 | `AUDIT_ELASTICSEARCH_VERIFY_CERTS` | `true` | `false` for a self-signed cluster |
 | `AUDIT_ELASTICSEARCH_SETUP` | `true` | Install the template and ILM policy on start |
 | `AUDIT_RETENTION_DAYS` | `90` | When ILM deletes the index |
+| `AUDIT_ROLLOVER_MAX_AGE` | `7d` | New index every `1d` / `7d` / `30d` |
+| `AUDIT_ROLLOVER_MAX_SIZE` | `50gb` | ...or sooner, at this size |
 | `AUDIT_SHIP_INTERVAL_SECONDS` | `2.0` | How often the shipper checks for new records |
 | `AUDIT_SHIP_BATCH_SIZE` | `500` | Documents per bulk request |
 

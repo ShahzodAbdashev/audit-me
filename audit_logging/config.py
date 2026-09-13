@@ -81,6 +81,13 @@ class AuditConfig(BaseSettings):
     elasticsearch_setup: bool = True
     #: Days before ILM deletes an index. Compliance may dictate this.
     retention_days: int = Field(default=90, gt=0)
+    #: How often a new index is started: "1d" daily, "7d" weekly, "30d" monthly.
+    #: Indices are already named by date either way, and ``@timestamp`` range
+    #: queries work regardless — this only changes deletion granularity and
+    #: shard count. Smaller means more shards; very small on a low-volume
+    #: service just makes tiny indices.
+    rollover_max_age: str = "7d"
+    rollover_max_size: str = "50gb"
     ship_interval_seconds: float = Field(default=2.0, gt=0)
     ship_batch_size: int = Field(default=500, gt=0)
     ship_timeout_seconds: float = Field(default=30.0, gt=0)

@@ -316,6 +316,9 @@ class ElasticsearchShipper:
         try:
             policy = json.loads(json.dumps(ILM_POLICY))
             policy["policy"]["phases"]["delete"]["min_age"] = f"{self.config.retention_days}d"
+            rollover = policy["policy"]["phases"]["hot"]["actions"]["rollover"]
+            rollover["max_age"] = self.config.rollover_max_age
+            rollover["max_primary_shard_size"] = self.config.rollover_max_size
             r1 = await client.put(f"/_ilm/policy/{ILM_POLICY_NAME}", json=policy)
             r2 = await client.put(
                 f"/_index_template/{INDEX_TEMPLATE_NAME}", json=INDEX_TEMPLATE
