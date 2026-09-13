@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install and verify the ``apiaudit`` Elasticsearch objects. Idempotent.
+"""Install and verify one dataset's audit Elasticsearch objects. Idempotent.
 
 Air-gapped by design: the only third-party import is ``requests``. No CLI
 arguments — everything is in the CONFIG block below. Edit it, run it, read the
@@ -58,9 +58,25 @@ ES_CA_BUNDLE: str | bool = "/etc/elasticsearch/certs/ca.crt"
 #: Seconds. Generous: a cold air-gapped cluster is slow to answer the first call.
 REQUEST_TIMEOUT = 30.0
 
-#: Object names. These must match `index.lifecycle.name` in the index template.
-ILM_POLICY_NAME = "apiaudit-ilm"
-INDEX_TEMPLATE_NAME = "logs-apiaudit"
+#: The dataset these objects are installed for — the middle part of
+#: ``logs-<dataset>-<namespace>``, and the value of ``AUDIT_DATASET`` (or, when
+#: that is unset, the sanitised ``AUDIT_SERVICE_NAME``) in the services that
+#: write to it. There is no default: guessing it would install a template
+#: scoped to the wrong indices, which is silent until the mapping is already
+#: wrong.
+DATASET = os.environ.get("AUDIT_DATASET", "")
+
+#: Object names, both derived from the dataset. The template is per dataset on
+#: purpose: it carries ``priority: 500``, which outranks Elasticsearch's
+#: built-in ``logs`` template (100), so a name shared between datasets — or a
+#: pattern wider than one dataset — would let whichever service ran this last
+#: redefine the mapping and retention of every other ``logs-*-*`` data stream
+#: in the cluster.
+ILM_POLICY_NAME = f"{DATASET}-ilm"
+INDEX_TEMPLATE_NAME = f"logs-{DATASET}"
+
+#: The token both JSON files carry in place of the dataset.
+DATASET_PLACEHOLDER = "{dataset}"
 
 #: Retention override, in days. None => use `_meta.RETENTION_DAYS` from
 #: ilm-apiaudit.json (the intended single source of truth, plan I-4).
@@ -73,14 +89,14 @@ RETENTION_DAYS: int | None = None
 #: for the target clusters, so this is deliberately explicit.
 COLD_TIER_EXISTS = False
 
-#: Data streams to pre-create. Format: logs-apiaudit.<sanitised service>-<env>,
-#: matching AuditConfig.data_stream_dataset + AuditConfig.environment.
+#: Data streams to pre-create. Format: logs-<DATASET>-<env>, matching
+#: AuditConfig.data_stream_dataset + AuditConfig.environment.
 #: Empty list is fine and is the normal case: with the template already in
 #: place, the first document Filebeat ships auto-creates the data stream with
 #: the correct mapping. Pre-creating just makes step 5 fail loudly at apply
 #: time instead of silently at first traffic.
 DATA_STREAMS: list[str] = [
-    # "logs-apiaudit.orders_api-prod",
+    # "logs-orders_api-prod",
 ]
 
 #: True => validate, GET, and print the diff, but send no PUT/POST.
@@ -426,8 +442,25 @@ def _call(sess: Any, method: str, path: str, body: Any = None, ok404: bool = Fal
 
 
 def main() -> int:
+    if not DATASET:
+        raise SystemExit(
+            "AUDIT_DATASET is not set. It is the middle part of "
+            "logs-<dataset>-<namespace>, and must be the same value the "
+            "services use (AUDIT_DATASET, or the sanitised AUDIT_SERVICE_NAME "
+            "when that is unset). Example:\n"
+            "  AUDIT_DATASET=orders_api ES_URL=... python bootstrap.py"
+        )
+    if "*" in DATASET or "-" in DATASET:
+        raise SystemExit(
+            f"AUDIT_DATASET={DATASET!r} cannot contain '*' or '-': the template "
+            f"pattern is logs-<dataset>-*, and either character would widen it "
+            "onto data streams this template does not own."
+        )
+
     ilm_doc = load_json(ILM_FILE)
-    template = load_json(TEMPLATE_FILE)
+    template = json.loads(
+        json.dumps(load_json(TEMPLATE_FILE)).replace(DATASET_PLACEHOLDER, DATASET)
+    )
 
     print("=" * 72)
     print("audit_logging Elasticsearch bootstrap")
@@ -487,7 +520,7 @@ def main() -> int:
     ))
 
     # --- 3. Verify what a NEW index would actually resolve to -------------
-    probe = f"logs-apiaudit.bootstrap_probe-{'x'}"
+    probe = f"{INDEX_TEMPLATE_NAME}-bootstrap_probe"
     sim = _call(sess, "POST", f"/_index_template/_simulate_index/{probe}")
     resolved = sim.get("template", {})
     sim_problems = check_dynamic_false({"template": resolved, "composed_of": []})
@@ -496,7 +529,7 @@ def main() -> int:
             "POST-INSTALL CHECK FAILED — the resolved mapping for "
             f"{probe} is not dynamic:false:\n"
             + "\n".join(f"  - {p}" for p in sim_problems)
-            + "\nSomething else in this cluster composes into logs-apiaudit.*-*."
+            + f"\nSomething else in this cluster composes into logs-{DATASET}-*."
         )
     print(f"\nsimulated index {probe}: dynamic:false holds, "
           f"{count_mapping_fields(resolved.get('mappings', {}))} fields, "

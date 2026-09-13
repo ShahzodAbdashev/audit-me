@@ -401,7 +401,7 @@ class ElasticsearchShipper:
         client = await self._http()
         if client is None:
             return
-        from .templates import ILM_POLICY, ILM_POLICY_NAME, INDEX_TEMPLATE, INDEX_TEMPLATE_NAME
+        from .templates import ILM_POLICY, index_template_for
 
         try:
             policy = json.loads(json.dumps(ILM_POLICY))
@@ -421,9 +421,13 @@ class ElasticsearchShipper:
                 rollover["max_age"] = self.config.rollover_max_age
             if self.config.rollover_max_size:
                 rollover["max_primary_shard_size"] = self.config.rollover_max_size
-            r1 = await client.put(f"/_ilm/policy/{ILM_POLICY_NAME}", json=policy)
+            dataset = self.config.data_stream_dataset
+            template = index_template_for(dataset)
+            r1 = await client.put(
+                f"/_ilm/policy/{self.config.ilm_policy_name}", json=policy
+            )
             r2 = await client.put(
-                f"/_index_template/{INDEX_TEMPLATE_NAME}", json=INDEX_TEMPLATE
+                f"/_index_template/{self.config.index_template_name}", json=template
             )
         except Exception as exc:  # noqa: BLE001
             self._warn_once("could not reach elasticsearch to install the template", exc)

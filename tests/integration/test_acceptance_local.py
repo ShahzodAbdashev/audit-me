@@ -2185,7 +2185,7 @@ def test_the_template_on_disk_still_says_what_the_tests_assume(
     template = es.template
     assert template.total_fields_limit == 200
     assert template.mappings["dynamic"] is False
-    assert template.index_patterns == ["logs-apiaudit.*-*"]
+    assert template.index_patterns == ["logs-{dataset}-*"]
     assert "audit.request.body" in template.flattened_paths()
     assert "audit.request.headers" in template.flattened_paths()
     assert len(template.declared_field_paths()) < 200

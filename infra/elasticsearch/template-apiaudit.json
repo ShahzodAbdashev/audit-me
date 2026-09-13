@@ -1,6 +1,6 @@
 {
   "index_patterns": [
-    "logs-apiaudit.*-*"
+    "logs-{dataset}-*"
   ],
   "priority": 500,
   "data_stream": {
@@ -14,7 +14,7 @@
     "schema": "docs/schema.md (frozen, Phase 0 exit)",
     "description": "API request audit documents. Monolithic on purpose: composed_of is empty so that no built-in or operator-supplied component template (logs@settings, logs@mappings, *@custom) can merge in a dynamic:true mapping. Everything this data stream is mapped by is in this one file.",
     "field_budget": "45 leaf fields per docs/schema.md \u00a73, plus object containers and 'labels'; total_fields.limit is 200 (AC-10)",
-    "ilm_policy": "apiaudit-ilm",
+    "ilm_policy": "{dataset}-ilm",
     "managed_by": "infra/elasticsearch/bootstrap.py"
   },
   "template": {
@@ -25,7 +25,7 @@
         "number_of_replicas": 1,
         "refresh_interval": "10s",
         "lifecycle": {
-          "name": "apiaudit-ilm"
+          "name": "{dataset}-ilm"
         },
         "mapping": {
           "total_fields": {

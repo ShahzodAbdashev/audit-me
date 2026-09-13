@@ -24,7 +24,7 @@ from typing import Any
 
 BASE = "http://127.0.0.1:8080"
 ES = "http://127.0.0.1:9200"
-INDEX = "logs-apiaudit.orders_api-demo"
+INDEX = "logs-orders_api-demo"
 
 #: Values planted in requests that must NEVER appear in any document.
 SECRETS = ["hunter2", "sk_live_LEAKED", "Bearer LEAKTOKEN", "cvv-999", "qs-SECRET"]
@@ -233,7 +233,7 @@ def verify(expected_min: int, log_dir: str | None = None) -> int:
           bool(keyed) and "sk_live_LEAKED" in keyed[0]["url"]["path"])
 
     check("data_stream routed by the package's own fields",
-          all(d.get("data_stream", {}).get("dataset") == "apiaudit.orders_api" for d in docs))
+          all(d.get("data_stream", {}).get("dataset") == "orders_api" for d in docs))
     check("user.* populated by user_resolver (FR-25)",
           any(d.get("user", {}).get("id") == "u-8813" for d in docs))
     check("trace.id present on every document",
@@ -273,7 +273,7 @@ def verify(expected_min: int, log_dir: str | None = None) -> int:
              .get("properties", {}).get("dataset", {}).get("type") == "constant_keyword")
 
     # dynamic:false actually enforced by ES, not just declared in the template.
-    stats = _es("/logs-apiaudit.undecodable-*/_count")
+    stats = _es("/logs-undecodable-*/_count")
     check("no undecodable lines quarantined", stats.get("count", 0) == 0,
           f"{stats.get('count')} lines failed to decode")
     return failures

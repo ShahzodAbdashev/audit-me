@@ -2,7 +2,7 @@
 
 Without a data view Kibana shows an empty "create your first data view"
 screen, which looks exactly like "nothing was indexed". This creates one
-pointing at `logs-apiaudit.*-*` with `@timestamp` as the time field, and marks
+pointing at `logs-<dataset>-*` with `@timestamp` as the time field, and marks
 it the default so Discover opens on it.
 
 Idempotent: re-running it reports the existing view rather than duplicating.
@@ -13,12 +13,18 @@ Idempotent: re-running it reports the existing view rather than duplicating.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
 KIBANA = "http://127.0.0.1:5601"
-PATTERN = "logs-apiaudit.*-*"
+
+#: The dataset to open Discover on. Matches AuditConfig.data_stream_dataset:
+#: the AUDIT_DATASET override, or the sanitised AUDIT_SERVICE_NAME. The demo
+#: app is "orders-api".
+DATASET = os.environ.get("AUDIT_DATASET", "orders_api")
+PATTERN = f"logs-{DATASET}-*"
 
 
 def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:

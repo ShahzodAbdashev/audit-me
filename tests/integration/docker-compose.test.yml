@@ -5,7 +5,7 @@
 #                              │   (bind mount)
 #     filebeat sees  /var/log/audit/testpod/orders-api-<pid>.jsonl
 #                              │   filestream + ndjson, index from data_stream.*
-#     elasticsearch  logs-apiaudit.<service>-<env>
+#     elasticsearch  logs-<service>-<env>
 #
 # The Filebeat config is `infra/filebeat/filebeat.yml` **verbatim** — the same
 # file the DaemonSet ships. Nothing about the shipper is re-specified here; the

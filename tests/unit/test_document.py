@@ -161,7 +161,7 @@ def test_envelope_matches_the_schema() -> None:
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", doc["@timestamp"])
     assert doc["data_stream"] == {
         "type": "logs",
-        "dataset": "apiaudit.orders_api",
+        "dataset": "orders_api",
         "namespace": "prod",
     }
 
@@ -631,7 +631,7 @@ def test_duration_is_zero_when_the_response_never_ended() -> None:
 
 def test_dataset_sanitises_the_service_name() -> None:
     doc = build_document(make_ctx(), make_config(service_name="Orders API v2!"))
-    assert doc["data_stream"]["dataset"] == "apiaudit.orders_api_v2_"
+    assert doc["data_stream"]["dataset"] == "orders_api_v2_"
 
 
 @pytest.mark.parametrize(

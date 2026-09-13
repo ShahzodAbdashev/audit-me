@@ -23,7 +23,8 @@ What this tier covers that Tier 2 structurally cannot:
   (AC-12).
 * **Routing.** ``index: "%{[data_stream.type]}-%{[dataset]}-%{[namespace]}"``
   resolving to a real data stream, and the data stream picking up the
-  ``logs-apiaudit`` template rather than a dynamic mapping (D-11, R-1).
+  the dataset's own ``logs-<dataset>`` template rather than a dynamic
+  mapping (D-11, R-1).
 * **Elasticsearch itself.** ``dynamic: false`` really dropping a field,
   ``flattened`` really costing one mapping entry, and ``GET _mapping``'s field
   count — AC-10 against the thing that actually counts fields.
@@ -74,9 +75,13 @@ ES_URL = os.environ.get("AUDIT_TEST_ES_URL", "http://127.0.0.1:9200").rstrip("/"
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent / ".stack" / "logs"
 LOG_DIR = Path(os.environ.get("AUDIT_TEST_LOG_DIR", str(DEFAULT_LOG_DIR)))
 
-INDEX_PATTERN = "logs-apiaudit.*-*"
-ILM_POLICY_NAME = "apiaudit-ilm"
-INDEX_TEMPLATE_NAME = "logs-apiaudit"
+#: The stack's app is ``service_name="orders-api"`` with no ``dataset``
+#: override, so its dataset is the sanitised service name. Template and policy
+#: are scoped to that dataset — see ``AuditConfig.index_template_name``.
+DATASET = "orders_api"
+INDEX_PATTERN = f"logs-{DATASET}-*"
+ILM_POLICY_NAME = f"{DATASET}-ilm"
+INDEX_TEMPLATE_NAME = f"logs-{DATASET}"
 
 #: Generous on purpose (plan R-9: flakiness in this tier is the top schedule
 #: risk). A line has to be noticed by `filestream`, batched, bulk-indexed, and
@@ -295,7 +300,7 @@ def bootstrap_elasticsearch(es: Elasticsearch) -> None:
     es.json("PUT", f"/_index_template/{INDEX_TEMPLATE_NAME}", json=template)
 
     # A5's README §3, "THE check": what would a new index actually get?
-    simulated = es.json("POST", "/_index_template/_simulate_index/logs-apiaudit.probe-test")
+    simulated = es.json("POST", f"/_index_template/_simulate_index/{INDEX_TEMPLATE_NAME}-probe")
     mappings = simulated["template"]["mappings"]
     assert mappings["dynamic"] == "false", "the installed template is not dynamic:false"
     settings = simulated["template"]["settings"]["index"]
@@ -1344,7 +1349,7 @@ async def test_AC_20_nothing_was_quarantined_as_undecodable(
     """The counter M-3 said did not exist. It exists now; it must read zero.
 
     `filebeat.yml` routes a line that did not decode to
-    `logs-apiaudit.undecodable-<namespace>` instead of dropping it, precisely so
+    `logs-undecodable-<namespace>` instead of dropping it, precisely so
     the loss is countable. A non-zero count here after the AC-20 traffic above
     means a line was truncated at `message_max_bytes` — M-3, live.
     """
@@ -1354,14 +1359,14 @@ async def test_AC_20_nothing_was_quarantined_as_undecodable(
     await app.sink.flush()
     es.one_by_trace(trace_id)  # a marker that this run's lines have been shipped
 
-    quarantined = es.count({"term": {"data_stream.dataset": "apiaudit.undecodable"}})
+    quarantined = es.count({"term": {"data_stream.dataset": "undecodable"}})
     assert quarantined == 0, (
-        f"{quarantined} line(s) reached logs-apiaudit.undecodable-{namespace}. "
+        f"{quarantined} line(s) reached logs-undecodable-{namespace}. "
         "A line failed Filebeat's ndjson decode — check its size against "
         "message_max_bytes (infra/filebeat/filebeat.yml, SIZING INVARIANTS) and "
         "`docker compose logs filebeat | grep -i 'exceeds\\|truncat'`."
     )
-    assert es.count({"term": {"data_stream.dataset": "apiaudit.orders_api"}}) > 0, (
+    assert es.count({"term": {"data_stream.dataset": "orders_api"}}) > 0, (
         "the premise: this run indexed something, so the zero above means "
         "'nothing was lost' and not 'nothing was shipped'"
     )
@@ -1414,7 +1419,7 @@ def test_AC_21_the_uncoerced_shape_really_is_rejected_by_elasticsearch(
         "@timestamp": "2026-09-05T11:22:33.123456Z",
         "data_stream": {
             "type": "logs",
-            "dataset": "apiaudit.probe",
+            "dataset": DATASET,
             "namespace": namespace,
         },
         "event": {"kind": "event", "outcome": "success"},
@@ -1423,7 +1428,7 @@ def test_AC_21_the_uncoerced_shape_really_is_rejected_by_elasticsearch(
     }
     response = es.request(
         "POST",
-        f"/logs-apiaudit.probe-{namespace}/_doc",
+        f"/logs-{DATASET}-{namespace}/_doc",
         params={"refresh": "true"},
         json=doc,
     )
@@ -1463,12 +1468,12 @@ def test_AC_21_a_flattened_key_over_the_lucene_term_limit_is_rejected(
         "@timestamp": "2026-09-05T11:22:33.123456Z",
         "data_stream": {
             "type": "logs",
-            "dataset": "apiaudit.probe",
+            "dataset": DATASET,
             "namespace": namespace,
         },
         "event": {"kind": "event", "outcome": "success"},
     }
-    index = f"/logs-apiaudit.probe-{namespace}/_doc"
+    index = f"/logs-{DATASET}-{namespace}/_doc"
 
     over = dict(base, trace={"id": uuid.uuid4().hex})
     over["audit"] = {"request": {"body": {"k" * 40_000: "v"}}}

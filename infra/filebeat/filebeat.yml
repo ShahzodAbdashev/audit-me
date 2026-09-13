@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Filebeat 8.x — ships audit_logging JSONL to the apiaudit data streams.
+# Filebeat 8.x — ships audit_logging JSONL to the audit data streams.
 #
 # The package writes {log_dir}/{service_name}-{pid}.jsonl (FR-26) and each pod
 # mounts /var/log/audit read-write under its own $POD_NAME subdirectory
@@ -172,7 +172,7 @@ processors:
   # away, and no counter on either side recorded it.
   #
   # Instead the line is routed to its own data stream,
-  # logs-apiaudit.undecodable-<namespace>, carrying:
+  # logs-undecodable-<namespace>, carrying:
   #   message        the raw line, truncated to 8 KiB (enough to identify the
   #                  service, trace.id and route; the whole point is that this
   #                  line was already too big or already malformed)
@@ -183,6 +183,21 @@ processors:
   # cannot blow the field budget (AC-10). data_stream.dataset IS indexed
   # (constant_keyword), so counting the loss is one term query. The runbook
   # query is in infra/README.md §6 "Detecting a silently lost line".
+  #
+  # THIS STREAM NEEDS ITS OWN TEMPLATE. Index templates are installed per
+  # dataset — `logs-<dataset>` matching `logs-<dataset>-*` — because the
+  # template's `priority: 500` outranks Elasticsearch's built-in `logs`
+  # template, so a wider pattern would impose this dynamic:false mapping on
+  # unrelated logs data streams. `undecodable` is a dataset like any other and
+  # is NOT covered by any service's template, so install one for it:
+  #
+  #     AUDIT_DATASET=undecodable ES_URL=... python infra/elasticsearch/bootstrap.py
+  #
+  # Without that, the first quarantined line creates the stream with a
+  # *dynamic* mapping — `message` becomes an indexed text field — and only a
+  # reindex fixes it (D-11). The dataset is fixed rather than derived because
+  # Filebeat is node-wide and an undecodable line, by definition, carries no
+  # data_stream.dataset to derive it from.
   #
   # The test is deliberately "is data_stream.dataset present", NOT "did
   # add_error_key set error.message". `error.message` is a legitimate field of
@@ -209,7 +224,7 @@ processors:
           target: "data_stream"
           fields:
             type: "logs"
-            dataset: "apiaudit.undecodable"
+            dataset: "undecodable"
             namespace: "${AUDIT_NAMESPACE:prod}"
       - add_fields:
           target: "event"
@@ -238,7 +253,8 @@ output.elasticsearch:
 
   # The whole routing contract in one line. data_stream.type/dataset/namespace
   # are constant_keyword in the mapping and are written by the package
-  # (AuditConfig.data_stream_dataset -> "apiaudit.<sanitised service_name>"),
+  # (AuditConfig.data_stream_dataset -> the sanitised service_name, or the
+  # AUDIT_DATASET override when several services share one index),
   # or by the quarantine branch above for a line that did not decode.
   index: "%{[data_stream.type]}-%{[data_stream.dataset]}-%{[data_stream.namespace]}"
 
@@ -311,8 +327,8 @@ setup.dashboards.enabled: false # infra/kibana/dashboards.ndjson, imported by ha
 # Filebeat refuses to start with a custom `output.elasticsearch.index` unless
 # setup.template.name and .pattern are also set — the check fires before it
 # notices template loading is disabled. Nothing is loaded from them.
-setup.template.name: "logs-apiaudit"
-setup.template.pattern: "logs-apiaudit.*-*"
+setup.template.name: "logs-${AUDIT_DATASET:audit}"
+setup.template.pattern: "logs-${AUDIT_DATASET:audit}-*"
 
 # ---------------------------------------------------------------------------
 # Disk queue — durability across an Elasticsearch outage (D-6)

@@ -84,10 +84,10 @@ def test_list_fields_accept_csv_and_json(
 @pytest.mark.parametrize(
     "name, dataset",
     [
-        ("orders-api", "apiaudit.orders_api"),
-        ("Orders API", "apiaudit.orders_api"),
-        ("billing.v2", "apiaudit.billing.v2"),
-        ("SVC/../etc", "apiaudit.svc_.._etc"),
+        ("orders-api", "orders_api"),
+        ("Orders API", "orders_api"),
+        ("billing.v2", "billing.v2"),
+        ("SVC/../etc", "svc_.._etc"),
     ],
 )
 def test_data_stream_dataset_is_sanitised(name: str, dataset: str) -> None:
@@ -108,42 +108,63 @@ def test_user_resolver_is_callable_and_optional() -> None:
 
 def test_FR_33_index_name_is_derived_from_service_and_environment() -> None:
     c = AuditConfig(service_name="Orders API", environment="prod")
-    assert c.data_stream_dataset == "apiaudit.orders_api"
+    assert c.data_stream_dataset == "orders_api"
     assert c.data_stream_namespace == "prod"
-    assert c.index_name == "logs-apiaudit.orders_api-prod"
+    assert c.index_name == "logs-orders_api-prod"
 
 
 def test_FR_33_dataset_and_namespace_can_be_overridden() -> None:
-    c = AuditConfig(service_name="anything", dataset="apiaudit.billing", namespace="tenant-a")
-    assert c.index_name == "logs-apiaudit.billing-tenant_a"
+    c = AuditConfig(service_name="anything", dataset="billing", namespace="tenant-a")
+    assert c.index_name == "logs-billing-tenant_a"
 
 
-@pytest.mark.parametrize("bad", ["myaudit.foo", "logs-apiaudit.foo", "audit.foo", "apiaudit"])
-def test_FR_33_a_dataset_the_template_cannot_match_is_refused(bad: str) -> None:
+def test_FR_33_several_services_can_share_one_index() -> None:
+    """The same `dataset` in every service collects them in one data stream.
+
+    They stay distinguishable by `service.name`, which every document carries
+    as an indexed keyword.
+    """
+    orders = AuditConfig(service_name="orders-api", dataset="platform", environment="prod")
+    payments = AuditConfig(service_name="payments-api", dataset="platform", environment="prod")
+    assert orders.index_name == payments.index_name == "logs-platform-prod"
+    assert orders.index_template_name == payments.index_template_name == "logs-platform"
+
+
+@pytest.mark.parametrize("bad", ["has-a-dash", "wild*card", "logs-foo", ".leading_dot", "   "])
+def test_FR_33_a_dataset_that_would_widen_the_template_is_refused(bad: str) -> None:
     """The guard that matters.
 
-    `index_patterns` is `logs-apiaudit.*-*`. A dataset outside that prefix
-    produces an index the template does not match, so Elasticsearch creates it
-    with a **dynamic mapping** — which keeps working until the field count
-    explodes and is fixable only by a reindex (D-11). Silent at every layer,
-    so it has to be refused here.
+    The template is installed as `logs-<dataset>` matching `logs-<dataset>-*`,
+    at `priority: 500` — which outranks Elasticsearch's built-in `logs`
+    template (100). A dataset carrying `-` or `*` widens that pattern onto data
+    streams this package does not own, and imposes its `dynamic: false` mapping
+    on them: their documents then index with none of their fields. Silent at
+    every layer, so it has to be refused here.
     """
-    with pytest.raises(ValidationError, match="apiaudit"):
+    with pytest.raises(ValidationError):
         AuditConfig(service_name="s", dataset=bad)
+
+
+def test_FR_33_template_and_policy_names_are_scoped_to_the_dataset() -> None:
+    """Two datasets must not share a template, or the last one to start wins."""
+    c = AuditConfig(service_name="orders-api", environment="prod")
+    assert c.index_template_name == "logs-orders_api"
+    assert c.index_template_pattern == "logs-orders_api-*"
+    assert c.ilm_policy_name == "orders_api-ilm"
 
 
 def test_FR_33_overrides_are_sanitised_like_the_derived_form() -> None:
     """Elasticsearch rejects a data stream name with uppercase or `,\\\\/*?"<>|`
     or a space, so an override cannot be passed through unchecked."""
-    c = AuditConfig(service_name="s", dataset="apiaudit.Billing V2", namespace="Tenant A")
-    assert c.index_name == "logs-apiaudit.billing_v2-tenant_a"
+    c = AuditConfig(service_name="s", dataset="Billing V2", namespace="Tenant A")
+    assert c.index_name == "logs-billing_v2-tenant_a"
 
 
 def test_FR_33_env_vars_reach_the_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUDIT_SERVICE_NAME", "s")
-    monkeypatch.setenv("AUDIT_DATASET", "apiaudit.custom")
+    monkeypatch.setenv("AUDIT_DATASET", "custom")
     monkeypatch.setenv("AUDIT_NAMESPACE", "staging")
-    assert AuditConfig().index_name == "logs-apiaudit.custom-staging"
+    assert AuditConfig().index_name == "logs-custom-staging"
 
 
 def test_config_uses_no_pydantic_settings_api_newer_than_the_declared_floor() -> None:

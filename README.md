@@ -42,10 +42,43 @@ export AUDIT_ELASTICSEARCH_PASSWORD=...
 Start your app. That is the whole setup — no Filebeat, no manual template
 install, nothing to run first. On startup the package installs its own index
 template and ILM policy, then ships. Records appear in
-`logs-apiaudit.orders_api-prod`.
+`logs-orders_api-prod`.
+
+The index is `logs-<dataset>-<namespace>`, where the dataset defaults to the
+sanitised `AUDIT_SERVICE_NAME` and the namespace to `AUDIT_ENVIRONMENT`. The
+template and the ILM policy are installed **per dataset** — `logs-orders_api`
+matching `logs-orders_api-*`, and `orders_api-ilm` — so two services never
+share them and neither can redefine the other's mapping or retention.
 
 Use `AUDIT_ELASTICSEARCH_API_KEY` instead of user/password if you prefer, and
 `AUDIT_ELASTICSEARCH_VERIFY_CERTS=false` for a self-signed cluster.
+
+### Several services, one index
+
+Set the same `AUDIT_DATASET` everywhere and give each service its own
+`AUDIT_SERVICE_NAME`:
+
+```bash
+# shared by every service
+AUDIT_DATASET=platform
+AUDIT_NAMESPACE=prod
+
+# per service
+AUDIT_SERVICE_NAME=orders-api     # and payments-api, search-api, …
+```
+
+Everything lands in `logs-platform-prod`, and each record carries
+`service.name`, `service.version`, `host.hostname` and `process.pid`, so
+`service.name: "orders-api"` is the whole filter. One dataset means one ILM
+policy, so retention and rollover are shared — split the dataset when two
+services need different retention.
+
+A dataset cannot contain `-` or `*`. The template is installed as
+`logs-<dataset>` matching `logs-<dataset>-*` at `priority: 500`, which
+outranks Elasticsearch's built-in `logs` template, so either character would
+widen that pattern onto data streams this package does not own and impose its
+`dynamic: false` mapping on them — their documents would index with none of
+their fields. `AuditConfig` refuses it rather than letting that happen.
 
 ### It still writes to disk first
 
@@ -76,13 +109,27 @@ in the [repository](https://github.com/ShahzodAbdashev/audit-me) under
 
 ```bash
 git clone https://github.com/ShahzodAbdashev/audit-me
+AUDIT_DATASET=orders_api \
 ES_URL=https://your-cluster:9200 ES_USERNAME=elastic ES_PASSWORD=... \
   python audit-me/infra/elasticsearch/bootstrap.py
 ```
 
+`AUDIT_DATASET` is required and has no default: the template is scoped to one
+dataset, so guessing it would install a template pointed at the wrong indices.
+Run it once per dataset, plus once with `AUDIT_DATASET=undecodable` for the
+stream Filebeat quarantines undecodable lines into.
+
 The exact same template is bundled in the package as
 `audit_logging.templates.INDEX_TEMPLATE`, and a test asserts the two never
-drift — so you can also install it from Python if that is easier.
+drift — so you can also install it from Python if that is easier. Both copies
+carry `{dataset}` where the dataset goes;
+`audit_logging.templates.index_template_for("orders_api")` binds it. The
+Kibana objects in `infra/kibana/dashboards.ndjson` carry the same placeholder,
+so substitute it before importing them:
+
+```bash
+sed 's/{dataset}/orders_api/g' infra/kibana/dashboards.ndjson > /tmp/dash.ndjson
+```
 
 On Kubernetes, mount the log directory into your app pod:
 
@@ -163,7 +210,7 @@ long past the point where reindexing is comfortable.
 | `AUDIT_QUEUE_MAX_BYTES` | `67108864` | Memory bound; past it records drop and are counted |
 | `AUDIT_FILE_MAX_BYTES` | `268435456` | Rotation size |
 | `AUDIT_FILE_BACKUP_COUNT` | `8` | Files kept — with the above, ~2 GB per pod |
-| `AUDIT_DATASET` / `AUDIT_NAMESPACE` | derived | Override the index. Dataset must start with `apiaudit.` |
+| `AUDIT_DATASET` / `AUDIT_NAMESPACE` | derived | Override the index. Same dataset in several services collects them in one index |
 | `AUDIT_CAPTURE_TEXT_BODIES` | `false` | Store non-JSON bodies — see the warning below |
 | `AUDIT_EXTRA_HEADER_ALLOWLIST` | — | Extra headers to keep |
 

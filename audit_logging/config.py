@@ -85,11 +85,14 @@ class AuditConfig(BaseSettings):
     #: Overrides the dataset derived from ``service_name``. This is the second
     #: half of the index name: ``logs-<dataset>-<namespace>``.
     #:
-    #: **It must start with** ``apiaudit.`` — the shipped index template is
-    #: ``index_patterns: ["logs-apiaudit.*-*"]``, so a dataset outside that
-    #: prefix means the template does not apply, the data stream is created
-    #: with a *dynamic* mapping, and only a reindex fixes it (D-11). The
-    #: validator below refuses it rather than letting that happen quietly.
+    #: Set it to the *same* value in several services to collect them all in
+    #: one index; they stay distinguishable by ``service.name`` on every
+    #: document. Leave it unset and each service gets its own.
+    #:
+    #: The index template is installed per dataset — ``logs-<dataset>``,
+    #: matching ``logs-<dataset>-*`` — so the dataset is the only thing
+    #: scoping it. The validator below refuses a value that would widen that
+    #: pattern onto data streams this package does not own.
     dataset: str | None = None
     #: Overrides the namespace, which otherwise follows ``environment``. Use it
     #: when the audit namespace and the deployment environment are not the same
@@ -279,30 +282,37 @@ class AuditConfig(BaseSettings):
 
     @field_validator("dataset")
     @classmethod
-    def _dataset_must_match_the_template(cls, v: str | None) -> str | None:
-        """Refuse a dataset the shipped index template cannot match.
+    def _dataset_must_be_usable_in_an_index_name(cls, v: str | None) -> str | None:
+        """Refuse a dataset that cannot name a data stream, or that would widen
+        the index template's pattern beyond this package's own indices.
 
-        ``infra/elasticsearch/template-apiaudit.json`` is
-        ``index_patterns: ["logs-apiaudit.*-*"]``. A dataset outside that
-        prefix produces an index the template does not match, so Elasticsearch
-        creates it with a **dynamic mapping** — which keeps working, and keeps
-        indexing, until the field count explodes, and is fixable only by a
-        reindex (D-11). That failure is silent at every layer, so it is caught
-        here instead.
+        The template is installed per dataset — name ``logs-<dataset>``,
+        ``index_patterns: ["logs-<dataset>-*"]`` — so the dataset is the only
+        thing scoping it. A dataset containing ``*`` or ``-`` would produce a
+        pattern that matches other people's data streams, and at this
+        template's ``priority: 500`` it would beat Elastic's built-in ``logs``
+        template and impose this package's ``dynamic: false`` mapping on them.
+        Their documents would then silently lose every field.
         """
         if v is None:
             return v
-        if not v.startswith("apiaudit."):
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("dataset cannot be empty; leave it unset to derive it from service_name")
+        if "*" in stripped or "-" in stripped:
             raise ValueError(
-                f"dataset must start with 'apiaudit.' (got {v!r}). The shipped index "
-                "template matches logs-apiaudit.*-* only; anything else silently gets a "
-                "dynamic mapping that only a reindex can fix. To use a different prefix, "
-                "change index_patterns in infra/elasticsearch/template-apiaudit.json and "
-                "reinstall the template first."
+                f"dataset cannot contain '*' or '-' (got {v!r}). The index name is "
+                "logs-<dataset>-<namespace> and the template pattern is "
+                "logs-<dataset>-*, so either character widens that pattern onto "
+                "data streams this package does not own. Use '_' or '.' instead."
             )
-        if len(v) <= len("apiaudit."):
-            raise ValueError("dataset needs something after the 'apiaudit.' prefix")
-        return v
+        if stripped.startswith("logs-") or stripped.startswith("."):
+            raise ValueError(
+                f"dataset cannot start with 'logs-' or '.' (got {v!r}): the package "
+                "already prefixes the index with 'logs-', and Elasticsearch treats a "
+                "leading dot as a system index."
+            )
+        return stripped
 
     @model_validator(mode="after")
     def _rollover_needs_a_trigger(self) -> AuditConfig:
@@ -343,10 +353,10 @@ class AuditConfig(BaseSettings):
 
     @property
     def data_stream_dataset(self) -> str:
-        """``apiaudit.<sanitised service name>``, or the ``dataset`` override."""
+        """The sanitised ``service_name``, or the ``dataset`` override."""
         if self.dataset is not None:
             return self._sanitise(self.dataset)
-        return f"apiaudit.{self._sanitise(self.service_name)}"
+        return self._sanitise(self.service_name)
 
     @property
     def data_stream_namespace(self) -> str:
@@ -363,3 +373,32 @@ class AuditConfig(BaseSettings):
         asking "where did my audit records go?".
         """
         return f"logs-{self.data_stream_dataset}-{self.data_stream_namespace}"
+
+    @property
+    def index_template_name(self) -> str:
+        """The index template installed for this dataset.
+
+        Named after the dataset rather than after the package, because the
+        template is *scoped* to the dataset: two services writing to different
+        datasets must not share one template, or whichever restarted last
+        would silently redefine the other's mapping and retention.
+        """
+        return f"logs-{self.data_stream_dataset}"
+
+    @property
+    def index_template_pattern(self) -> str:
+        """``logs-<dataset>-*`` — every namespace of this dataset, nothing else.
+
+        Deliberately not ``logs-*-*``. This template carries ``priority: 500``,
+        which outranks Elasticsearch's built-in ``logs`` template (100), so a
+        wildcard here would apply this package's ``dynamic: false`` audit
+        mapping to every unrelated ``logs-*-*`` data stream in the cluster —
+        Elastic Agent's, Beats', anyone's — and their documents would be
+        indexed with none of their fields.
+        """
+        return f"logs-{self.data_stream_dataset}-*"
+
+    @property
+    def ilm_policy_name(self) -> str:
+        """``<dataset>-ilm``. Per dataset, for the same reason as the template."""
+        return f"{self.data_stream_dataset}-ilm"
