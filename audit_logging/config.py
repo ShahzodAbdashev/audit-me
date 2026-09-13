@@ -79,15 +79,22 @@ class AuditConfig(BaseSettings):
     #: send anything until the template exists, because the first document
     #: would otherwise create a data stream with a dynamic mapping (D-11).
     elasticsearch_setup: bool = True
-    #: Days before ILM deletes an index. Compliance may dictate this.
-    retention_days: int = Field(default=90, gt=0)
-    #: How often a new index is started: "1d" daily, "7d" weekly, "30d" monthly.
-    #: Indices are already named by date either way, and ``@timestamp`` range
-    #: queries work regardless — this only changes deletion granularity and
-    #: shard count. Smaller means more shards; very small on a low-volume
-    #: service just makes tiny indices.
-    rollover_max_age: str = "7d"
-    rollover_max_size: str = "50gb"
+    #: Days before ILM deletes an index, or **None to never delete**.
+    #:
+    #: ``AUDIT_RETENTION_DAYS=never`` (or ``0``, or empty) drops the delete
+    #: phase from the policy entirely, which is what an audit trail under a
+    #: retention obligation needs — deleting evidence on a timer is the one
+    #: failure mode you cannot recover from. 90 days is a default for the
+    #: common case, not a recommendation.
+    retention_days: int | None = 90
+    #: When a new index is started. ``"1d"`` daily, ``"7d"`` weekly, ``"30d"``
+    #: monthly, or **None for size-only** rollover.
+    #: Indices carry the date in their name either way, and ``@timestamp``
+    #: range queries work at any granularity — this changes shard count and
+    #: how coarsely ILM can act, not what you can search.
+    rollover_max_age: str | None = "7d"
+    #: The other trigger, whichever comes first. None to disable.
+    rollover_max_size: str | None = "50gb"
     ship_interval_seconds: float = Field(default=2.0, gt=0)
     ship_batch_size: int = Field(default=500, gt=0)
     ship_timeout_seconds: float = Field(default=30.0, gt=0)
@@ -184,6 +191,29 @@ class AuditConfig(BaseSettings):
             return json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
 
+    @field_validator("retention_days", mode="before")
+    @classmethod
+    def _retention_never(cls, v: Any) -> Any:
+        """Accept ``never`` / ``0`` / empty as "keep forever"."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            t = v.strip().lower()
+            if t in ("", "never", "forever", "none", "0", "keep"):
+                return None
+            v = int(t)
+        if int(v) <= 0:
+            return None
+        return int(v)
+
+    @field_validator("rollover_max_age", "rollover_max_size", mode="before")
+    @classmethod
+    def _rollover_off(cls, v: Any) -> Any:
+        """Empty or ``none`` disables that trigger, leaving the other one."""
+        if isinstance(v, str) and v.strip().lower() in ("", "none", "off", "never"):
+            return None
+        return v
+
     @field_validator("dataset")
     @classmethod
     def _dataset_must_match_the_template(cls, v: str | None) -> str | None:
@@ -210,6 +240,22 @@ class AuditConfig(BaseSettings):
         if len(v) <= len("apiaudit."):
             raise ValueError("dataset needs something after the 'apiaudit.' prefix")
         return v
+
+    @model_validator(mode="after")
+    def _rollover_needs_a_trigger(self) -> AuditConfig:
+        """An index that never rolls over grows until it breaks.
+
+        With both triggers off, one backing index takes every document
+        forever — past Lucene's 2.1 billion document limit it simply refuses
+        writes, and by then it is far too large to reindex comfortably.
+        """
+        if self.rollover_max_age is None and self.rollover_max_size is None:
+            raise ValueError(
+                "rollover_max_age and rollover_max_size cannot both be disabled: "
+                "one backing index would grow without bound. Set a size "
+                "(rollover_max_size='50gb') for size-only rollover."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_queue_bounds(self) -> AuditConfig:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from audit_logging.config import AuditConfig
 from audit_logging.metrics import InMemoryMetrics
@@ -229,3 +230,67 @@ async def test_rollover_and_retention_reach_the_installed_policy(tmp_path: Path)
     assert hot["max_age"] == "1d"
     assert hot["max_primary_shard_size"] == "10gb"
     assert sent[0]["policy"]["phases"]["delete"]["min_age"] == "30d"
+
+
+@pytest.mark.parametrize(
+    ("retention", "expect_delete"),
+    [(90, True), (None, False), ("never", False), (0, False), (365, True)],
+)
+async def test_retention_never_drops_the_delete_phase(
+    tmp_path: Path, retention: Any, expect_delete: bool
+) -> None:
+    """An audit trail under a retention obligation must be able to keep everything.
+
+    Deleting evidence on a timer is the one failure here you cannot undo, so
+    "never" has to be expressible — not approximated with a large number.
+    """
+    import os
+
+    write_log(tmp_path, os.getpid(), 1)
+    sent: list[dict] = []
+
+    class Capturing(FakeClient):
+        async def put(self, path: str, **kw: Any) -> FakeResponse:
+            if "_ilm" in path:
+                sent.append(kw["json"])
+            return FakeResponse()
+
+    shipper = ElasticsearchShipper(cfg(tmp_path, retention_days=retention))
+    shipper._client = Capturing()
+    await shipper._tick()
+    phases = sent[0]["policy"]["phases"]
+    assert ("delete" in phases) is expect_delete
+    if expect_delete:
+        assert phases["delete"]["min_age"] == f"{int(retention)}d"
+
+
+async def test_size_only_rollover_drops_max_age(tmp_path: Path) -> None:
+    """Weekly, daily, or purely by size — all three have to be expressible."""
+    import os
+
+    write_log(tmp_path, os.getpid(), 1)
+    sent: list[dict] = []
+
+    class Capturing(FakeClient):
+        async def put(self, path: str, **kw: Any) -> FakeResponse:
+            if "_ilm" in path:
+                sent.append(kw["json"])
+            return FakeResponse()
+
+    shipper = ElasticsearchShipper(
+        cfg(tmp_path, rollover_max_age=None, rollover_max_size="20gb")
+    )
+    shipper._client = Capturing()
+    await shipper._tick()
+    rollover = sent[0]["policy"]["phases"]["hot"]["actions"]["rollover"]
+    assert rollover == {"max_primary_shard_size": "20gb"}
+
+
+def test_both_rollover_triggers_off_is_refused(tmp_path: Path) -> None:
+    """One backing index taking every document forever hits Lucene's 2.1bn
+    document limit and then refuses writes, far too late to reindex."""
+    with pytest.raises(ValidationError, match="cannot both be disabled"):
+        AuditConfig(
+            service_name="s", log_dir=tmp_path,
+            rollover_max_age=None, rollover_max_size=None,
+        )

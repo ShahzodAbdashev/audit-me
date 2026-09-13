@@ -122,9 +122,31 @@ and Filebeat's Elasticsearch role must **not** hold `manage_index_templates` —
 | `AUDIT_ELASTICSEARCH_API_KEY` | — | Base64 `id:api_key`, instead of the above |
 | `AUDIT_ELASTICSEARCH_VERIFY_CERTS` | `true` | `false` for a self-signed cluster |
 | `AUDIT_ELASTICSEARCH_SETUP` | `true` | Install the template and ILM policy on start |
-| `AUDIT_RETENTION_DAYS` | `90` | When ILM deletes the index |
-| `AUDIT_ROLLOVER_MAX_AGE` | `7d` | New index every `1d` / `7d` / `30d` |
+| `AUDIT_RETENTION_DAYS` | `90` | When ILM deletes. **`never` keeps everything** |
+| `AUDIT_ROLLOVER_MAX_AGE` | `7d` | New index every `1d` / `7d` / `30d`, or `never` for size-only |
 | `AUDIT_ROLLOVER_MAX_SIZE` | `50gb` | ...or sooner, at this size |
+
+Partitioning, the four shapes people actually want:
+
+```bash
+# daily indices, never deleted  — the usual choice for a compliance audit trail
+AUDIT_ROLLOVER_MAX_AGE=1d
+AUDIT_RETENTION_DAYS=never
+
+# weekly indices, kept 7 years
+AUDIT_ROLLOVER_MAX_AGE=7d
+AUDIT_RETENTION_DAYS=2555
+
+# roll by size only, never deleted — for wildly uneven traffic
+AUDIT_ROLLOVER_MAX_AGE=never
+AUDIT_ROLLOVER_MAX_SIZE=20gb
+AUDIT_RETENTION_DAYS=never
+```
+
+`never` (or `0`) on retention drops the delete phase from the ILM policy
+entirely. Both rollover triggers cannot be off at once &mdash; a single backing
+index would grow until Lucene's 2.1&nbsp;billion document limit stops writes,
+long past the point where reindexing is comfortable.
 | `AUDIT_SHIP_INTERVAL_SECONDS` | `2.0` | How often the shipper checks for new records |
 | `AUDIT_SHIP_BATCH_SIZE` | `500` | Documents per bulk request |
 

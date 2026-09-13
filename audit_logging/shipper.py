@@ -315,10 +315,22 @@ class ElasticsearchShipper:
 
         try:
             policy = json.loads(json.dumps(ILM_POLICY))
-            policy["policy"]["phases"]["delete"]["min_age"] = f"{self.config.retention_days}d"
-            rollover = policy["policy"]["phases"]["hot"]["actions"]["rollover"]
-            rollover["max_age"] = self.config.rollover_max_age
-            rollover["max_primary_shard_size"] = self.config.rollover_max_size
+            phases = policy["policy"]["phases"]
+            if self.config.retention_days is None:
+                # Keep forever: drop the delete phase, and the cold phase's
+                # min_age with it is fine — ILM simply never deletes. An audit
+                # trail that erases itself on a timer is worse than one that
+                # costs disk.
+                phases.pop("delete", None)
+            else:
+                phases["delete"]["min_age"] = f"{self.config.retention_days}d"
+            rollover = phases["hot"]["actions"]["rollover"]
+            rollover.pop("max_age", None)
+            rollover.pop("max_primary_shard_size", None)
+            if self.config.rollover_max_age:
+                rollover["max_age"] = self.config.rollover_max_age
+            if self.config.rollover_max_size:
+                rollover["max_primary_shard_size"] = self.config.rollover_max_size
             r1 = await client.put(f"/_ilm/policy/{ILM_POLICY_NAME}", json=policy)
             r2 = await client.put(
                 f"/_index_template/{INDEX_TEMPLATE_NAME}", json=INDEX_TEMPLATE
