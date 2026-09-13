@@ -31,9 +31,11 @@ every record N times. This one claims:
 * any file whose owning PID is **no longer alive** — otherwise a worker that
   crashed would leave its unshipped tail on disk forever.
 
-Progress is kept in ``.audit-shipper-state.json`` beside the logs, keyed by
-``(device, inode)`` rather than by name, so a rotation cannot make it re-send a
-file it has already read.
+Progress is kept in ``.audit-shipper-{pid}.json`` beside the logs — one file
+per worker, never shared — keyed by ``(device, inode)`` rather than by name, so
+a rotation cannot make it re-send a file it has already read. Adopting an
+orphan means reading the dead worker's file too, so that its tail is shipped
+from where it stopped rather than from zero.
 """
 
 from __future__ import annotations
@@ -167,9 +169,9 @@ class ElasticsearchShipper:
         self._save_state()
 
     def _prune(self) -> None:
-        """Forget files that no longer exist, and drop their locks.
+        """Forget files that no longer exist, drop their locks and their state.
 
-        Both of these grow by one entry per file and never shrink otherwise.
+        All three grow by one entry per file and never shrink otherwise.
         Rotation deletes files continuously — with daily rollover and no
         retention limit that is a new entry every day, forever, in a file
         rewritten on every change.
@@ -179,11 +181,15 @@ class ElasticsearchShipper:
         # must survive: when that worker dies we adopt its file, and a pruned
         # offset would restart it from zero and duplicate every record in it.
         log_dir = Path(self.config.log_dir)
-        present = {
-            k
-            for k in (self._key(p) for p in log_dir.glob("*.jsonl*"))
-            if k is not None
-        }
+        present: set[str] = set()
+        pids_with_files: set[int] = set()
+        for path in log_dir.glob("*.jsonl*"):
+            key = self._key(path)
+            if key is not None:
+                present.add(key)
+            match = _FILENAME.match(path.name)
+            if match is not None:
+                pids_with_files.add(int(match.group("pid")))
         gone = [k for k in self._state if k not in present]
         for key in gone:
             del self._state[key]
@@ -195,6 +201,31 @@ class ElasticsearchShipper:
             try:
                 handle.close()   # releases the flock
             except Exception:  # noqa: BLE001
+                pass
+
+        self._reap_state_files(log_dir, pids_with_files)
+
+    def _reap_state_files(self, log_dir: Path, pids_with_files: set[int]) -> None:
+        """Delete the state file of a dead worker whose logs are all gone.
+
+        A dead worker's offsets are read exactly once, when we adopt one of its
+        files (:meth:`_adopt_offset`), so the file has to stay while any of
+        them is on disk — another worker may not have claimed its share yet.
+        Once rotation and retention have taken the last one, nothing can ever
+        need it again, and without this it stays there forever: one more file
+        per restart, in the directory the logs live in.
+        """
+        mine = os.getpid()
+        for state_file in log_dir.glob(_STATE_FILE.format(pid="*")):
+            name = state_file.stem.rpartition("-")[2]
+            if not name.isdigit():
+                continue  # _LEGACY_STATE_FILE: new workers still inherit it
+            pid = int(name)
+            if pid == mine or pid in pids_with_files or _pid_is_alive(pid):
+                continue
+            try:
+                state_file.unlink()
+            except OSError:  # already gone, or another worker got there first
                 pass
 
     # -- which files are ours ---------------------------------------------
@@ -213,11 +244,11 @@ class ElasticsearchShipper:
             pid = int(match.group("pid"))
             if pid == mine:
                 claimed.append(path)
-            elif not _pid_is_alive(pid) and self._claim_orphan(path):
+            elif not _pid_is_alive(pid) and self._claim_orphan(path, pid):
                 claimed.append(path)
         return claimed
 
-    def _claim_orphan(self, path: Path) -> bool:
+    def _claim_orphan(self, path: Path, pid: int) -> bool:
         """Take an exclusive flock on a dead worker's file.
 
         Every live worker can see an orphan, and without this they would all
@@ -236,7 +267,37 @@ class ElasticsearchShipper:
         except Exception:  # noqa: BLE001 - another worker holds it, or no fcntl
             return False
         self._orphans[key] = handle
+        self._adopt_offset(path, pid)
         return True
+
+    def _adopt_offset(self, path: Path, pid: int) -> None:
+        """Continue the dead worker's progress through the file it left.
+
+        Its offsets are in its own ``.audit-shipper-{pid}.json``, which nothing
+        else reads. Without this the orphan is shipped from zero and every
+        record already indexed from it is sent a second time -- the bulk action
+        carries no ``_id``, so Elasticsearch stores the duplicate rather than
+        overwriting. Four gunicorn workers and a restart make that four whole
+        files, up to the rotation ceiling each.
+        """
+        key = self._key(path)
+        if key is None or key in self._state:
+            return
+        state_path = Path(self.config.log_dir) / _STATE_FILE.format(pid=pid)
+        try:
+            offsets = json.loads(state_path.read_text())
+        except (OSError, ValueError):
+            return  # no state left behind: the whole file is genuinely unsent
+        offset = offsets.get(key)
+        if isinstance(offset, int) and offset > 0:
+            self._state[key] = offset
+            self._state_dirty = True
+            _LOG.info(
+                "audit_logging shipper: adopted %s at offset %d from dead pid %d",
+                path.name,
+                offset,
+                pid,
+            )
 
     # -- progress ----------------------------------------------------------
 
