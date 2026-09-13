@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
+from pydantic_settings.sources import PydanticBaseSettingsSource
 
 __all__ = ["AuditConfig", "DEFAULT_EXCLUDE_PATHS", "MAX_ALLOWED_BODY_BYTES"]
 
@@ -28,6 +29,33 @@ DEFAULT_EXCLUDE_PATHS: list[str] = [
     "/docs",
     "/openapi.json",
 ]
+
+
+#: Fields whose environment value we parse ourselves (CSV *or* JSON).
+_RAW_LIST_FIELDS = frozenset({"exclude_paths", "extra_redact_keys", "extra_header_allowlist"})
+
+
+class _RawListEnvSource(EnvSettingsSource):
+    """Stop pydantic-settings JSON-decoding our list fields before validation.
+
+    ``AUDIT_EXCLUDE_PATHS=/health,/metrics`` is the form people actually write,
+    and the default env source calls ``json.loads`` on any field it considers
+    complex — so that value raises ``SettingsError`` before a validator ever
+    sees it.
+
+    ``NoDecode`` does exactly this and is the obvious answer, but it only
+    exists in pydantic-settings >= 2.8. Depending on it made this package
+    unimportable for anyone on an older pin — which is a poor trade for a
+    library, since the consumer's stack is not ours to dictate. This subclass
+    is a few lines and works across 2.x.
+    """
+
+    def prepare_field_value(
+        self, field_name: str, field: Any, value: Any, value_is_complex: bool
+    ) -> Any:
+        if field_name in _RAW_LIST_FIELDS:
+            return value
+        return super().prepare_field_value(field_name, field, value, value_is_complex)
 
 
 class AuditConfig(BaseSettings):
@@ -163,13 +191,13 @@ class AuditConfig(BaseSettings):
     #: ``too_complex`` rather than half-scrubbed. Only consulted when
     #: ``capture_text_bodies`` is on.
     max_scrub_bytes: int = Field(default=32 * 1024, gt=0)
-    exclude_paths: Annotated[list[str], NoDecode] = Field(
+    exclude_paths: list[str] = Field(
         default_factory=lambda: list(DEFAULT_EXCLUDE_PATHS)
     )
 
     # --- redaction (additive only, FR-13) -----------------------------------
-    extra_redact_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    extra_header_allowlist: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    extra_redact_keys: list[str] = Field(default_factory=list)
+    extra_header_allowlist: list[str] = Field(default_factory=list)
 
     # --- queue and flush ----------------------------------------------------
     queue_max_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
@@ -190,6 +218,23 @@ class AuditConfig(BaseSettings):
         if text.startswith("["):
             return json.loads(text)
         return [part.strip() for part in text.split(",") if part.strip()]
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Same precedence as the default, with our env source substituted."""
+        return (
+            init_settings,
+            _RawListEnvSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     @field_validator("retention_days", mode="before")
     @classmethod

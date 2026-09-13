@@ -144,3 +144,49 @@ def test_FR_33_env_vars_reach_the_overrides(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("AUDIT_DATASET", "apiaudit.custom")
     monkeypatch.setenv("AUDIT_NAMESPACE", "staging")
     assert AuditConfig().index_name == "logs-apiaudit.custom-staging"
+
+
+def test_config_uses_no_pydantic_settings_api_newer_than_the_declared_floor() -> None:
+    """pyproject declares `pydantic-settings>=2`; keep the code honest to that.
+
+    `NoDecode` was the original way this module stopped the env source from
+    JSON-decoding its list fields. It only exists in pydantic-settings >= 2.8,
+    so importing it made the whole package unimportable for anyone on an older
+    pin — a real ImportError in a real service, from a floor we never declared.
+
+    A library does not get to dictate its consumer's stack. `_RawListEnvSource`
+    does the same job across 2.x. Verified working on 2.0.3 through 2.15.
+    """
+    import ast
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[2] / "audit_logging" / "config.py"
+    ).read_text()
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "pydantic_settings"
+        ):
+            imported |= {a.name for a in node.names}
+
+    too_new = {"NoDecode", "CliApp", "CliSettingsSource", "SettingsError"}
+    assert not (imported & too_new), (
+        f"{imported & too_new} needs a newer pydantic-settings than pyproject declares"
+    )
+
+
+def test_list_fields_accept_csv_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The form people actually write, and the one that used to raise.
+
+    The default env source calls `json.loads` on any field it considers
+    complex, so `/health,/metrics` failed before a validator could see it.
+    """
+    monkeypatch.setenv("AUDIT_SERVICE_NAME", "s")
+    monkeypatch.setenv("AUDIT_EXCLUDE_PATHS", "/health,/metrics,/live")
+    monkeypatch.setenv("AUDIT_EXTRA_REDACT_KEYS", "email,phone")
+    c = AuditConfig()
+    assert c.exclude_paths == ["/health", "/metrics", "/live"]
+    assert c.extra_redact_keys == ["email", "phone"]
