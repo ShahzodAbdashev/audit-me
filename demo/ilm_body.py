@@ -1,4 +1,4 @@
-"""Print the ILM request body for `PUT _ilm/policy/apiaudit`.
+"""Print the ILM request body for `PUT _ilm/policy/<dataset>-ilm`.
 
 `infra/elasticsearch/ilm-apiaudit.json` carries a top-level `_meta` envelope
 holding `RETENTION_DAYS` — the single retention knob (infra/README §4). The

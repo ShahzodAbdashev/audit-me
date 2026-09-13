@@ -91,12 +91,17 @@ put_or_die() { # url file label
 "$PY" demo/ilm_body.py > /tmp/audit-ilm-body.json || { fail "could not build the ILM body"; exit 1; }
 # Canonical names, taken from infra/elasticsearch/bootstrap.py — NOT invented
 # here. The template's settings.index.lifecycle.name points at
-# "apiaudit-ilm", so a policy installed under any other name silently
-# never attaches; and the template must be "logs-apiaudit" or it collides
+# "<dataset>-ilm", so a policy installed under any other name silently
+# never attaches; and the template must be "logs-<dataset>" or it collides
 # with the one the Tier 1 suite installs (same patterns, same priority,
 # which Elasticsearch rejects outright).
-put_or_die "http://127.0.0.1:9200/_ilm/policy/apiaudit-ilm" /tmp/audit-ilm-body.json ilm
-put_or_die "http://127.0.0.1:9200/_index_template/logs-apiaudit" infra/elasticsearch/template-apiaudit.json template
+# The template on disk is unbound: it carries "{dataset}" where the dataset
+# goes, because the pattern is scoped per dataset rather than to a wildcard.
+# The demo app is service_name="orders-api", so its dataset is "orders_api".
+"$PY" -c 'import json,sys; from audit_logging.templates import index_template_for; json.dump(index_template_for("orders_api"), sys.stdout)' \
+  > /tmp/audit-template-body.json || { fail "could not build the template body"; exit 1; }
+put_or_die "http://127.0.0.1:9200/_ilm/policy/orders_api-ilm" /tmp/audit-ilm-body.json ilm
+put_or_die "http://127.0.0.1:9200/_index_template/logs-orders_api" /tmp/audit-template-body.json template
 
 step "Starting the FastAPI service (real uvicorn, real socket)"
 AUDIT_LOG_DIR="$LOG_DIR" AUDIT_ENVIRONMENT=demo \
@@ -131,7 +136,7 @@ step "Waiting for the file to reach Elasticsearch"
 echo "JSONL on disk:"; wc -l "$LOG_DIR"/*.jsonl 2>/dev/null || echo "  (no file yet)"
 for i in $(seq 1 60); do
   curl -s -XPOST "http://127.0.0.1:9200/_refresh" >/dev/null 2>&1
-  n=$(curl -s "http://127.0.0.1:9200/logs-apiaudit.orders_api-demo/_count" 2>/dev/null \
+  n=$(curl -s "http://127.0.0.1:9200/logs-orders_api-demo/_count" 2>/dev/null \
       | grep -o '"count":[0-9]*' | cut -d: -f2)
   [ "${n:-0}" -ge 12 ] 2>/dev/null && { echo "$n documents indexed after ${i}s"; break; }
   sleep 1

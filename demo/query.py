@@ -23,7 +23,7 @@ import urllib.request
 from typing import Any
 
 ES = os.environ.get("ES_URL", "http://127.0.0.1:9200")
-INDEX = "logs-apiaudit.*-*"
+INDEX = f"logs-{os.environ.get('AUDIT_DATASET', 'orders_api')}-*"
 
 
 def call(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -93,8 +93,9 @@ subjects:
 #
 # The role filebeat_writer needs, and nothing more:
 #   cluster:  monitor
-#   index  :  auto_configure, create_doc  on  logs-apiaudit.*-*
+#   index  :  auto_configure, create_doc  on  logs-<dataset>-*
 #   index  :  auto_configure, create_doc, create_index  on  apiaudit-dead-letter*
+#             (plus logs-undecodable-* for the quarantine stream)
 #             (output.elasticsearch.non_indexable_policy.dead_letter_index —
 #              without create_index the dead-letter write fails and a
 #              permanently rejected audit document is lost silently again)
@@ -172,7 +173,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             # data_stream.namespace for the quarantine route in filebeat.yml
-            # (logs-apiaudit.undecodable-<namespace>). Audit documents that
+            # (logs-undecodable-<namespace>). Audit documents that
             # decode carry their own namespace from AuditConfig.environment;
             # this is only for lines that did not decode and therefore have no
             # fields of their own. Set it to the same environment string the

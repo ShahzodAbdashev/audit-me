@@ -1030,7 +1030,7 @@ def build_minimal_document(
     try:
         dataset = config.data_stream_dataset
     except Exception:  # pragma: no cover - service_name is a validated str
-        dataset = "apiaudit.unknown"
+        dataset = "unknown"
 
     doc: dict[str, Any] = {
         "@timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
