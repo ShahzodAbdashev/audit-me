@@ -111,3 +111,30 @@ def test_the_bound_template_references_the_ilm_policy_by_its_real_name() -> None
     lifecycle = bound["template"]["settings"]["index"]["lifecycle"]["name"]
     assert lifecycle == ilm_policy_name_for("orders_api")
     assert bound["_meta"]["ilm_policy"] == ilm_policy_name_for("orders_api")
+
+
+def test_the_timestamp_field_opts_out_of_index_level_ignore_malformed() -> None:
+    """Elasticsearch 8.5 refuses the whole template without this one attribute.
+
+    The template sets ``index.mapping.ignore_malformed`` so that a wrong-typed
+    value becomes a silently unindexed field rather than a rejected document.
+    On 8.5 that setting reaches **every** field, ``@timestamp`` included, and a
+    data stream forbids the attribute on its timestamp field:
+
+        illegal_argument_exception: data stream timestamp field [@timestamp]
+        has disallowed [ignore_malformed] attribute specified
+
+    which surfaces as "template after composition is invalid" and takes the
+    entire install down with it. Later versions exempt the timestamp field, so
+    this is invisible on a newer cluster -- reproduced on a real 8.5.1, where
+    removing the opt-out fails and restoring it installs cleanly.
+    """
+    mapping = index_template_for("orders_api")["template"]["mappings"]
+    timestamp = mapping["properties"]["@timestamp"]
+    assert timestamp["ignore_malformed"] is False, (
+        "@timestamp must opt out explicitly, or the template is rejected on ES < 8.7"
+    )
+    settings = index_template_for("orders_api")["template"]["settings"]
+    assert settings["index"]["mapping"]["ignore_malformed"] is True, (
+        "the index-level setting is what the opt-out exists to survive"
+    )
