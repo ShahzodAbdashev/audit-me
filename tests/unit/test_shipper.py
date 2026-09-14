@@ -368,6 +368,76 @@ async def test_upgrading_inherits_offsets_instead_of_reshipping(tmp_path: Path) 
     assert client.lines == [], "re-shipped records that were already sent"
 
 
+async def test_an_adopted_orphan_resumes_where_the_dead_worker_stopped(tmp_path: Path) -> None:
+    """Four gunicorn workers per pod, and every restart orphans four files.
+
+    The dead worker's offsets are in its own `.audit-shipper-{pid}.json`. Read
+    from zero instead, and every record already indexed from that file is sent
+    again -- the bulk action carries no `_id`, so Elasticsearch keeps both.
+    """
+    dead = 2**22 - 1
+    path = write_log(tmp_path, dead, 5)
+    with path.open("rb") as fh:
+        shipped = len(fh.readline()) + len(fh.readline())
+    key = f"{path.stat().st_dev}:{path.stat().st_ino}"
+    (tmp_path / f".audit-shipper-{dead}.json").write_text(json.dumps({key: shipped}))
+
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    client = FakeClient()
+    shipper._client = client
+    shipper._bootstrapped = True
+    shipper._load_state()
+    await shipper._tick()
+
+    assert [d["n"] for d in client.lines] == [2, 3, 4], "re-sent what the dead worker had already shipped"
+
+
+async def test_an_orphan_with_no_state_left_behind_ships_whole(tmp_path: Path) -> None:
+    """Adoption must not swallow a file whose worker died before shipping any of it."""
+    dead = 2**22 - 2
+    write_log(tmp_path, dead, 3)
+
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    client = FakeClient()
+    shipper._client = client
+    shipper._bootstrapped = True
+    shipper._load_state()
+    await shipper._tick()
+
+    assert [d["n"] for d in client.lines] == [0, 1, 2]
+
+
+async def test_a_dead_workers_state_file_goes_only_once_its_logs_do(tmp_path: Path) -> None:
+    """Otherwise it is one more stale JSON per restart, forever, beside the logs.
+
+    It cannot go earlier than that: the offsets in it are what an orphan is
+    adopted at, and another worker may not have claimed its share of that
+    worker's files yet.
+    """
+    still_has_logs = 2**22 - 3
+    write_log(tmp_path, still_has_logs, 2)
+    kept = tmp_path / f".audit-shipper-{still_has_logs}.json"
+    kept.write_text(json.dumps({"1:2": 10}))
+
+    logs_all_rotated_away = 2**22 - 4
+    reaped = tmp_path / f".audit-shipper-{logs_all_rotated_away}.json"
+    reaped.write_text(json.dumps({"3:4": 10}))
+
+    legacy = tmp_path / ".audit-shipper-state.json"
+    legacy.write_text(json.dumps({"5:6": 10}))
+
+    shipper = ElasticsearchShipper(cfg(tmp_path))
+    shipper._client = FakeClient()
+    shipper._bootstrapped = True
+    shipper._load_state()
+    await shipper._tick()
+
+    assert not reaped.exists(), "kept a dead worker's state file with no files left to adopt"
+    assert kept.exists(), "deleted the offsets an unclaimed orphan is still adopted at"
+    assert legacy.exists(), "deleted the file older versions' offsets are inherited from"
+    assert shipper._state_path.exists(), "reaped its own state file"
+
+
 async def test_a_fresh_install_with_no_legacy_file_still_ships(tmp_path: Path) -> None:
     """The inheritance must not swallow a genuinely new file."""
     import os

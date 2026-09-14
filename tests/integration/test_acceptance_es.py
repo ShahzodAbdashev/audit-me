@@ -60,6 +60,7 @@ from audit_logging.config import AuditConfig
 from audit_logging.metrics import InMemoryMetrics
 from audit_logging.middleware import AuditMiddleware
 from audit_logging.sinks.file_sink import FileSink
+from audit_logging.templates import DATASET_PLACEHOLDER
 
 from ._apps import STREAM_CHUNKS, make_app, make_wide_app, wide_body
 from ._es_double import ILM_PATH, TEMPLATE_PATH, load_template
@@ -294,7 +295,11 @@ def bootstrap_elasticsearch(es: Elasticsearch) -> None:
     policy["policy"]["phases"]["delete"]["min_age"] = f"{retention_days}d"
     es.json("PUT", f"/_ilm/policy/{ILM_POLICY_NAME}", json=policy)
 
-    template = load_template(TEMPLATE_PATH)
+    # The file on disk carries "{dataset}" where the dataset goes, exactly as
+    # templates.py ships it. Installed unbound, its index_patterns match no
+    # index at all and the simulate below comes back with no mapping.
+    raw = json.dumps(load_template(TEMPLATE_PATH))
+    template = json.loads(raw.replace(DATASET_PLACEHOLDER, DATASET))
     # The same hard guard bootstrap.py refuses to run without.
     assert template["template"]["mappings"]["dynamic"] is False
     es.json("PUT", f"/_index_template/{INDEX_TEMPLATE_NAME}", json=template)
