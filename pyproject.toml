@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # `audit-logging` is taken on PyPI; this matches the repository name.
 name = "audit-me"
-version = "0.1.0"
+version = "0.1.1"
 description = "Per-request API audit logging for FastAPI, with redaction, straight to Elasticsearch."
 readme = "README.md"
 license = "MIT"

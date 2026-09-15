@@ -18,7 +18,7 @@ from .middleware import AuditMiddleware
 from .sinks.file_sink import FileSink
 from .sinks.null_sink import NullSink
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.1"
 
 __all__ = [
     "AuditConfig",
