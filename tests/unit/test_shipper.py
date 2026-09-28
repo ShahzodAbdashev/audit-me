@@ -912,3 +912,33 @@ async def test_FR_60_constant_keywords_are_not_pushed(tmp_path: Path) -> None:
 
     assert constants(body["properties"]) == []
     assert "audit" in body["properties"]
+
+
+# --- FR-61: lines left from an earlier dataset follow the current one ------------
+
+async def test_FR_61_a_line_written_under_an_old_dataset_is_shipped_under_the_current_one(
+    tmp_path: Path,
+) -> None:
+    """Seen live on 2026-09-28: ownercheck ran with AUDIT_DATASET=fortress, then
+    was switched to ownercheck. The unshipped old lines went first into the new
+    data stream, fixed its constant_keyword data_stream.dataset to "fortress",
+    and every new record was then refused. The config decides where this
+    service's records go, so every line is shipped with the current values."""
+    import os
+
+    config = cfg(tmp_path)
+    path = tmp_path / f"ship-api-{os.getpid()}.jsonl"
+    old = {"n": 0, "data_stream": {"type": "logs", "dataset": "fortress", "namespace": "old"},
+           "event": {"id": "e0"}}
+    new = {"n": 1, "data_stream": {"type": "logs", "dataset": config.data_stream_dataset,
+                                   "namespace": config.data_stream_namespace}, "event": {"id": "e1"}}
+    path.write_text(json.dumps(old) + "\n" + json.dumps(new) + "\n")
+    shipper = ElasticsearchShipper(config, InMemoryMetrics())
+    client = FakeClient()
+    shipper._client = client
+    shipper._bootstrapped = True
+    await shipper._tick()
+    shipped = {d["n"]: d["data_stream"] for d in client.lines}
+    want = {"type": "logs", "dataset": config.data_stream_dataset,
+            "namespace": config.data_stream_namespace}
+    assert shipped == {0: want, 1: want}

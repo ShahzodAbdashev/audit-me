@@ -89,13 +89,14 @@ DEFAULT_MAX_CLOCK_SKEW_S = 300.0
 
 
 def _bulk_payload(
-    lines: list[bytes], index: str, ingested: str, max_skew_s: float = DEFAULT_MAX_CLOCK_SKEW_S
+    lines: list[bytes], index: str, ingested: str, max_skew_s: float = DEFAULT_MAX_CLOCK_SKEW_S,
+    data_stream: dict[str, str] | None = None,
 ) -> bytes:
     """The NDJSON body: a ``create`` action (with ``_id`` = event.id) per stamped line.
     CPU-bound (a parse and a dump per line), so it runs in a worker thread."""
     parts: list[bytes] = []
     for line in lines:
-        doc, doc_id = _stamp(line, ingested, max_skew_s)
+        doc, doc_id = _stamp(line, ingested, max_skew_s, data_stream)
         meta: dict[str, Any] = {"_index": index}
         if doc_id is not None:
             meta["_id"] = doc_id
@@ -140,9 +141,15 @@ def _mark_skew(doc: dict[str, Any], ingested: str, max_skew_s: float) -> None:
 
 
 def _stamp(
-    line: bytes, ingested: str, max_skew_s: float = DEFAULT_MAX_CLOCK_SKEW_S
+    line: bytes, ingested: str, max_skew_s: float = DEFAULT_MAX_CLOCK_SKEW_S,
+    data_stream: dict[str, str] | None = None,
 ) -> tuple[bytes, str | None]:
     """Set ``event.ingested`` and the skew tag (FR-41); return the line and its ``event.id``.
+
+    ``data_stream`` (FR-61): the CURRENT dataset/namespace. A line written under
+    an earlier ``AUDIT_DATASET`` still carries the old values; shipped as-is into
+    the current data stream it would fix that stream's constant_keyword to the
+    old value on first write and every later record would be refused.
 
     A line that is not a JSON object is shipped unchanged, without an id.
     """
@@ -157,6 +164,9 @@ def _stamp(
         return line, None
     event["ingested"] = ingested
     _mark_skew(doc, ingested, max_skew_s)
+    if data_stream:
+        current = doc.get("data_stream")
+        doc["data_stream"] = {**(current if isinstance(current, dict) else {}), **data_stream}
     doc_id = event.get("id")
     stamped = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
     return stamped, doc_id if isinstance(doc_id, str) and doc_id else None
@@ -484,7 +494,10 @@ class ElasticsearchShipper:
         index = self.config.index_name
         # Off the loop: a 500-line batch of large documents is seconds of JSON work.
         max_skew = float(getattr(self.config, "max_clock_skew_s", DEFAULT_MAX_CLOCK_SKEW_S))
-        payload = await asyncio.to_thread(_bulk_payload, lines, index, _now_iso_ms(), max_skew)
+        data_stream = {"type": "logs", "dataset": self.config.data_stream_dataset,
+                       "namespace": self.config.data_stream_namespace}
+        payload = await asyncio.to_thread(_bulk_payload, lines, index, _now_iso_ms(), max_skew,
+                                          data_stream)
         try:
             response = await client.post(
                 "/_bulk",
