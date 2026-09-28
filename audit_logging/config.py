@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import PydanticBaseSettingsSource
 
@@ -238,6 +238,38 @@ class AuditConfig(BaseSettings):
     # --- hooks --------------------------------------------------------------
     user_resolver: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
 
+    # --- semantic layer (0.2) -----------------------------------------------
+    #: Off -> documents are exactly the 0.1 shape; no bag, no describe/enrich.
+    semantic_enabled: bool = True
+    #: Level 2 descriptions (``.json``; ``.yaml`` needs PyYAML). Loaded once
+    #: when the middleware is built; a bad file fails startup, not a request.
+    catalog_file: str | None = None
+    #: Overlay on the built-in Uzbek label table used for derived sentences.
+    labels_file: str | None = None
+    #: Render language for ``message`` (X-4); a missing template falls back to uz.
+    lang: str = Field(default="uz", min_length=1)
+    #: Lowest ``audit.risk`` a derived (undescribed) route gets.
+    derived_risk_floor: str = "normal"
+
+    # --- round 2 (PLAN §17) -------------------------------------------------
+    #: CIDRs (comma-separated) of proxies whose X-Forwarded-For / X-Real-IP is
+    #: believed (FR-46). Empty = nothing trusted = 0.1 ``client.ip`` (the peer).
+    #: A bad entry fails construction.
+    trusted_proxies: str = ""
+    #: Per-process hash chain ``audit.integrity.*`` (stamped in the writer thread).
+    integrity_enabled: bool = False
+    #: Optional slow lookup ``enricher(doc) -> patch | None`` run in the FileSink
+    #: writer thread, never on the request path (FR-55).
+    enricher: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
+    enrich_timeout_ms: int = Field(default=200, gt=0)
+    enrich_cache_seconds: float = Field(default=60.0, ge=0)
+    #: Shipper tags ``clock_skew`` past this many seconds (FR-41).
+    max_clock_skew_s: float = Field(default=300, gt=0)
+    #: Allow the shipper to overwrite an index template of another schema version (FR-48).
+    schema_upgrade: bool = False
+
+    _trusted_networks: tuple[Any, ...] = PrivateAttr(default=())
+
     @field_validator("exclude_paths", "extra_redact_keys", "extra_header_allowlist", mode="before")
     @classmethod
     def _split_csv(cls, v: Any) -> Any:
@@ -344,6 +376,34 @@ class AuditConfig(BaseSettings):
                 "leading dot as a system index."
             )
         return stripped
+
+    @field_validator("derived_risk_floor")
+    @classmethod
+    def _risk_floor_is_a_risk(cls, v: str) -> str:
+        from .semantic.model import RISKS
+
+        if v not in RISKS:
+            raise ValueError(f"derived_risk_floor must be one of {RISKS}, got {v!r}")
+        return v
+
+    @field_validator("catalog_file", "labels_file", mode="before")
+    @classmethod
+    def _empty_file_is_none(cls, v: Any) -> Any:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @model_validator(mode="after")
+    def _parse_trusted_proxies(self) -> AuditConfig:
+        from .semantic.proxies import parse_trusted
+
+        self._trusted_networks = parse_trusted(self.trusted_proxies)
+        return self
+
+    @property
+    def trusted_networks(self) -> tuple[Any, ...]:
+        """``trusted_proxies`` parsed once at construction."""
+        return self._trusted_networks
 
     @model_validator(mode="after")
     def _rollover_needs_a_trigger(self) -> AuditConfig:

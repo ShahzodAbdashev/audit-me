@@ -148,6 +148,16 @@ METRIC_NAMES: frozenset[str] = frozenset(
         # alerting on "we are losing request bodies" must not be paged
         # by a chatty query route.
         "audit_queries_skipped_total",
+        # 0.2 (FR-39, X-8): the shipper's counters, and the semantic layer's.
+        "audit_ship_documents_total",
+        "audit_ship_failures_total",
+        "audit_ship_rejected_total",
+        "audit_semantic_errors_total",
+        "audit_derived_total",
+        "audit_emit_dropped_total",
+        # FR-39: documents gone for good, summed over every drop path
+        # (refused by ES — X-8, no dead-letter — and the sink's drops).
+        "audit_documents_lost_total",
     }
 )
 

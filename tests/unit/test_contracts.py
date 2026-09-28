@@ -80,6 +80,13 @@ def test_metric_names_are_the_plans_seven_plus_the_review_addition() -> None:
         "audit_queue_bytes",
         "audit_flush_seconds",
         "audit_file_rotations_total",
+        "audit_ship_documents_total",
+        "audit_ship_failures_total",
+        "audit_ship_rejected_total",
+        "audit_semantic_errors_total",
+        "audit_derived_total",
+        "audit_emit_dropped_total",
+        "audit_documents_lost_total",
     }
 
 

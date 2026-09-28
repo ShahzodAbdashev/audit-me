@@ -840,8 +840,9 @@ def _coerce_roles(value: Any) -> list[str] | None:
     return None
 
 
-def _user_block(user: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Schema §2.5 — ``id``/``name``/``roles`` only, absent when empty.
+def _user_block(user: dict[str, Any] | None, *, semantic: bool = False) -> dict[str, Any] | None:
+    """Schema §2.5 — ``id``/``name``/``roles`` (+ 0.2 ``full_name``/``department``/
+    ``verified``/``source``) only, absent when empty.
 
     ``user_resolver`` is application code and may return anything (FR-25).
     ``index.mapping.ignore_malformed`` does **not** cover ``keyword``, so a
@@ -853,7 +854,10 @@ def _user_block(user: dict[str, Any] | None) -> dict[str, Any] | None:
     if not user:
         return None
     block: dict[str, Any] = {}
-    for key in ("id", "name"):
+    # 0.2 adds full_name/department/source (keyword/text) and verified (bool),
+    # only with the semantic layer on: off means exactly the 0.1 shape.
+    keys = ("id", "name", "full_name", "department", "source") if semantic else ("id", "name")
+    for key in keys:
         if key in user:
             coerced = _coerce_keyword(user[key])
             if coerced is not None:
@@ -862,6 +866,8 @@ def _user_block(user: dict[str, Any] | None) -> dict[str, Any] | None:
         roles = _coerce_roles(user["roles"])
         if roles is not None:
             block["roles"] = roles
+    if semantic and isinstance(user.get("verified"), bool):
+        block["verified"] = user["verified"]
     return block or None
 
 
@@ -985,7 +991,7 @@ def build_document(
     if user_agent:
         doc["user_agent"] = {"original": user_agent}
 
-    user = _user_block(ctx.user)
+    user = _user_block(ctx.user, semantic=bool(config.semantic_enabled))
     if user is not None:
         doc["user"] = user
 

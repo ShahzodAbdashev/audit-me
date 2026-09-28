@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable, MutableMapping
@@ -50,6 +51,15 @@ from .document import (
     build_document,
     build_minimal_document,
 )
+from .redact import DEFAULT_REDACT_KEYS, normalize_key
+from .semantic import runtime
+from .semantic.catalog import Catalog, load_catalog
+from .semantic.context import close_bag, current_bag, open_bag
+from .semantic.derive import Labels, load_labels
+from .semantic.describe import describe
+from .semantic.enrich import enrich
+from .semantic.model import LEVEL_DERIVED
+from .semantic.startup import warn_if_sigterm_hijacked
 
 __all__ = ["AuditMiddleware"]
 
@@ -136,6 +146,11 @@ class AuditMiddleware:
         "_sink_closed",
         "_max_body",
         "_background",
+        "_semantic",
+        "_catalog",
+        "_labels",
+        "_redact_keys",
+        "_enricher",
     )
 
     def __init__(
@@ -164,11 +179,25 @@ class AuditMiddleware:
         self._shipper: Any = None
         self._sink_closed = False
         self._background: set[asyncio.Task[None]] = set()
+        self._enricher: Any = None  # built with the default FileSink; closed after it
         # FR-15: with the kill switch off nothing is allocated and no file is
         # opened — the sink is never constructed.
         self._sink: Sink | None = None
         if self._enabled:
             self._sink = sink if sink is not None else self._build_sink()
+        # 0.2 semantic layer. Loaded once, here, and allowed to raise: a bad
+        # catalog or labels file is a configuration error and must fail the
+        # deploy, not degrade every request silently.
+        self._semantic = self._enabled and bool(config.semantic_enabled)
+        self._catalog: Catalog = {}
+        self._labels: Labels | None = None
+        self._redact_keys: frozenset[str] = DEFAULT_REDACT_KEYS
+        if self._semantic:
+            self._catalog = load_catalog(config.catalog_file)
+            self._labels = load_labels(config.labels_file)
+            self._redact_keys = DEFAULT_REDACT_KEYS | frozenset(
+                normalize_key(k) for k in config.extra_redact_keys
+            )
 
     # -- construction helpers ------------------------------------------------
 
@@ -176,7 +205,22 @@ class AuditMiddleware:
         try:
             from .sinks.file_sink import FileSink
 
-            return FileSink(self.config, self.metrics)
+            config = self.config
+            chain: Any = None
+            if config.integrity_enabled:
+                from .semantic.integrity import Chain
+
+                chain = Chain(config.service_name, os.getpid(), int(time.time() * 1000))
+            if config.enricher is not None:
+                from .semantic.enricher import Enricher
+
+                self._enricher = Enricher(
+                    config.enricher,
+                    timeout_ms=config.enrich_timeout_ms,
+                    cache_seconds=config.enrich_cache_seconds,
+                    metrics=self.metrics,
+                )
+            return FileSink(config, self.metrics, chain=chain, enricher=self._enricher)
         except Exception as exc:  # pragma: no cover - A4 not implemented yet
             self._oops("could not construct the default FileSink", exc)
             return None
@@ -237,6 +281,8 @@ class AuditMiddleware:
         async def send_w(message: Message) -> None:
             await send(message)
             if message.get("type") == "lifespan.startup.complete":
+                # The app has imported everything by now (§9, round-2 #10).
+                warn_if_sigterm_hijacked(_LOGGER)
                 await self._start_sink()
 
         await self.app(scope, receive_w, send_w)
@@ -249,8 +295,18 @@ class AuditMiddleware:
             await self._sink.start()
         except Exception as exc:
             self._oops("sink.start() failed", exc)
+        self._activate()
         await self._start_shipper()
         self._announce()
+
+    def _activate(self) -> None:
+        """Make this sink the one ``audit.emit()`` writes to (FR-56)."""
+        if self._sink is None:
+            return
+        try:
+            runtime.set_active(self._sink, self.config, self.metrics)
+        except Exception as exc:  # pragma: no cover - set_active is an assignment
+            self._oops("could not register the active sink", exc)
 
     def _announce(self) -> None:
         """One INFO line at startup saying where records go.
@@ -307,18 +363,25 @@ class AuditMiddleware:
         if self._sink is None or self._sink_closed:
             return
         self._sink_closed = True
+        active = runtime.get_active()
+        if active is not None and active.sink is self._sink:
+            runtime.clear_active()
         try:
             await asyncio.wait_for(
                 self._sink.close(), timeout=self.config.shutdown_flush_timeout
             )
         except Exception as exc:
             self._oops("sink.close() failed or timed out", exc)
+        if self._enricher is not None:
+            self._enricher.close()  # never raises; FileSink does not own it
+            self._enricher = None
 
     def _ensure_started(self) -> None:
         """Lazily start the sink from the request path without awaiting."""
         if self._sink is None or self._sink_started:
             return
         self._sink_started = True
+        self._activate()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # pragma: no cover - submit outside a loop
@@ -419,21 +482,75 @@ class AuditMiddleware:
                 outgoing = message
             await send(outgoing)
 
-        try:
-            await self.app(scope, receive_w, send_w)
-        except BaseException as exc:
+        token = None
+        if self._semantic:
             try:
-                ctx.exc = exc
-                if ctx.status_code is None:
-                    ctx.status_code = 500
-            except Exception:  # pragma: no cover
-                pass
-            self._emit(ctx, buffered, received_total, saw_disconnect, saw_request_message)
-            raise  # NFR-3: application exceptions propagate unchanged.
+                token = open_bag()  # FR-54: the handler's audit.target()/diff()/... land here
+            except Exception as exc:  # pragma: no cover - a ContextVar.set
+                self._oops("could not open the audit bag", exc)
+        try:
+            try:
+                await self.app(scope, receive_w, send_w)
+            except BaseException as exc:
+                try:
+                    ctx.exc = exc
+                    if ctx.status_code is None:
+                        ctx.status_code = 500
+                except Exception:  # pragma: no cover
+                    pass
+                self._emit(ctx, buffered, received_total, saw_disconnect, saw_request_message)
+                raise  # NFR-3: application exceptions propagate unchanged.
 
-        self._emit(ctx, buffered, received_total, saw_disconnect, saw_request_message)
+            self._emit(ctx, buffered, received_total, saw_disconnect, saw_request_message)
+        finally:
+            if token is not None:
+                close_bag(token)
 
     # -- document emission ---------------------------------------------------
+
+    def _enrich(self, ctx: RequestContext, doc: dict[str, Any]) -> dict[str, Any]:
+        """0.2 describe + enrich. On any failure the 0.1 document goes out unchanged.
+
+        ``enrich`` mutates ``doc``, ``doc["event"]`` and ``doc["audit"]`` only,
+        so it works on a copy of exactly those; a half-enriched document can
+        therefore never escape.
+        """
+        labels = self._labels
+        if labels is None:  # pragma: no cover - set whenever _semantic is
+            return doc
+        try:
+            enriched = {**doc, "event": dict(doc["event"]), "audit": dict(doc["audit"])}
+            described = describe(
+                ctx.scope,
+                ctx.method,
+                catalog=self._catalog,
+                service=self.config.service_name,
+                labels=labels,
+                risk_floor=self.config.derived_risk_floor,
+            )
+            enrich(
+                enriched,
+                described,
+                current_bag(),
+                lang=self.config.lang,
+                service=self.config.service_name,
+                redact_keys=self._redact_keys,
+                headers=cast("list[tuple[bytes, bytes]]", ctx.scope.get("headers") or []),
+                trusted=self.config.trusted_networks,
+            )
+        except Exception as exc:
+            try:
+                self.metrics.inc("audit_semantic_errors_total")
+            except Exception:  # pragma: no cover - a Metrics impl must not raise
+                pass
+            self._oops("semantic enrichment failed; the 0.1 document was kept", exc)
+            return doc
+        if described.level == LEVEL_DERIVED:
+            try:
+                self.metrics.inc("audit_derived_total")
+            except Exception:  # pragma: no cover
+                pass
+        return enriched
 
     def _trace_id(self, headers: list[tuple[bytes, bytes]]) -> str:
         incoming = _header(headers, _TRACE_HEADER)
@@ -511,6 +628,8 @@ class AuditMiddleware:
             # (``audit_bodies_skipped_total``, review N2-6/N2-3), which needs
             # the same counters the middleware already holds.
             doc = build_document(ctx, self.config, metrics=self.metrics)
+            if self._semantic:
+                doc = self._enrich(ctx, doc)
         except Exception as exc:
             self._oops("could not build the audit document", exc)
             # FR-01 says exactly one document per request; NFR-3 forbids

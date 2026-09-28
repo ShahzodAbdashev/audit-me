@@ -23,7 +23,9 @@ Which thread touches what
 -------------------------
 
 Three threads reach this object. The **request thread** only ever runs
-``submit`` (a serialise and a ``deque.append`` — no lock, no I/O). The **event
+``submit`` (a serialise and a ``deque.append`` — no lock, no I/O; called from
+any other thread, the append is handed to the loop with
+``call_soon_threadsafe``). The **event
 loop** runs the lifecycle and the flusher. The **worker thread** behind
 ``asyncio.to_thread`` does every write and every rotation. Only the last two
 touch the file, and everything that changes the sink's *file identity* — the
@@ -386,9 +388,22 @@ def _safe_service_name(name: str) -> str:
 class FileSink(Sink):
     """Serialises to JSONL and writes from a background task."""
 
-    def __init__(self, config: AuditConfig, metrics: Metrics | None = None) -> None:
+    def __init__(
+        self,
+        config: AuditConfig,
+        metrics: Metrics | None = None,
+        *,
+        chain: Any = None,
+        enricher: Any = None,
+    ) -> None:
         self.config = config
         self.metrics: Metrics = metrics if metrics is not None else InMemoryMetrics()
+        #: Optional round-2 hooks, both run on the writer thread per batch (see
+        #: ``_prepare_batch``): ``enricher.apply(list[dict]) -> list[dict]`` then
+        #: ``chain.stamp(doc) -> doc`` in file order. Both ``None`` (the default)
+        #: leaves the batch path exactly as it was.
+        self._chain = chain
+        self._enricher = enricher
 
         self._queue: deque[bytes] = deque()
         self._queue_bytes: int = 0
@@ -444,6 +459,10 @@ class FileSink(Sink):
         self._orphan_fds: set[int] = set()
 
         self._task: asyncio.Task[None] | None = None
+        #: The loop ``start()`` ran on. ``submit`` from any other thread (a sync
+        #: handler calling ``audit.emit``, a threadpool task) hands the enqueue
+        #: to it: the queue accounting and ``_wake`` are loop-thread only.
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._wake: asyncio.Event | None = None
         self._lock: asyncio.Lock | None = None
         self._stopping = False
@@ -486,12 +505,34 @@ class FileSink(Sink):
                 # propagate into the request (NFR-3).
                 return self._drop_unserialisable(exc)
 
+            loop = self._loop
+            if loop is not None:
+                try:
+                    on_loop = asyncio.get_running_loop() is loop
+                except RuntimeError:
+                    on_loop = False
+                if not on_loop:
+                    # Optimistic True: a drop on the loop side is still counted there.
+                    try:
+                        loop.call_soon_threadsafe(self._enqueue, line)
+                    except RuntimeError:  # the loop is closed: shutdown is over
+                        return self._drop_after_close()
+                    return True
+            return self._enqueue(line)
+        except Exception:  # pragma: no cover - last-ditch, submit cannot raise
+            return False
+
+    def _enqueue(self, line: bytes) -> bool:
+        """Append one serialised line. Loop thread (or no loop yet) only."""
+        try:
+            if self._closed:
+                return self._drop_after_close()
             size = len(line)
             # FR-18's bound covers everything held in memory, not just the
             # deque: a batch in flight or parked for a retry is still ours
             # (review S-8).
             if self._queue_bytes + self._inflight_bytes + size > self._queue_max_bytes:
-                self.metrics.inc("audit_documents_dropped_total")
+                self._count_lost("audit_documents_dropped_total")
                 return False
 
             self._queue.append(line)
@@ -507,6 +548,11 @@ class FileSink(Sink):
             return True
         except Exception:  # pragma: no cover - last-ditch, submit cannot raise
             return False
+
+    def _count_lost(self, name: str, n: int = 1) -> None:
+        """A document gone for good: its own counter plus FR-39's one sum."""
+        self.metrics.inc(name, n)
+        self.metrics.inc("audit_documents_lost_total", n)
 
     def _publish_queue_bytes(self) -> None:
         """Republish the gauge from *every* byte the sink is holding (S-8)."""
@@ -533,7 +579,7 @@ class FileSink(Sink):
         document this sink did not write" adds the two.
         """
         self.dropped_after_close += 1
-        self.metrics.inc("audit_documents_dropped_after_close_total")
+        self._count_lost("audit_documents_dropped_after_close_total")
         if self.dropped_after_close == 1:
             logger.warning(
                 "audit file sink %s was closed while requests were still in "
@@ -570,7 +616,7 @@ class FileSink(Sink):
         one log line per distinct failure is affordable and worth having.
         """
         self.serialisation_failures += 1
-        self.metrics.inc("audit_documents_failed_total")
+        self._count_lost("audit_documents_failed_total")
         self._log_once(exc, "serialise")
         return False
 
@@ -595,6 +641,7 @@ class FileSink(Sink):
         self._starting = False
         if self._closed or self._task is not None:
             return
+        self._loop = asyncio.get_running_loop()
         if self._wake is None:
             self._wake = asyncio.Event()
         if self._lock is None:
@@ -720,8 +767,13 @@ class FileSink(Sink):
                 return
 
             started = time.monotonic()
+            # A retry was already prepared (and chain-stamped) on its first try.
+            hooked = not is_retry and (self._chain is not None or self._enricher is not None)
             try:
-                await asyncio.to_thread(self._write_batch, batch)
+                if hooked:
+                    await asyncio.to_thread(self._prepare_and_write, batch)
+                else:
+                    await asyncio.to_thread(self._write_batch, batch)
             except asyncio.CancelledError:
                 # Shutdown raced the write. `batch` now holds only the lines
                 # that did NOT reach the file.
@@ -751,7 +803,7 @@ class FileSink(Sink):
         """
         if is_retry:
             if batch:
-                self.metrics.inc("audit_documents_failed_total", len(batch))
+                self._count_lost("audit_documents_failed_total", len(batch))
             self._inflight_bytes = 0
             return
         if not batch:  # every line landed after all
@@ -779,6 +831,53 @@ class FileSink(Sink):
         return batch
 
     # -- file I/O (runs on a worker thread) ---------------------------------
+
+    def _prepare_and_write(self, batch: list[bytes]) -> None:
+        self._prepare_batch(batch)
+        self._write_batch(batch)
+
+    def _prepare_batch(self, batch: list[bytes]) -> None:
+        """Enrich, then chain-stamp, the batch **in place**. Never raises.
+
+        Runs here and not in ``submit`` because only the batch fixes the order
+        the lines reach the file, which is the order the chain must follow.
+        A line that does not parse as a JSON object, or whose stamped document
+        no encoder takes, is written as it was. The in-place update matters:
+        a failed write parks this same list for its retry, which must not be
+        enriched or stamped a second time.
+        """
+        try:
+            index: list[int] = []
+            docs: list[dict[str, Any]] = []
+            for i, line in enumerate(batch):
+                try:
+                    parsed = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(parsed, dict):
+                    index.append(i)
+                    docs.append(parsed)
+            if not docs:
+                return
+            if self._enricher is not None:
+                try:
+                    enriched = self._enricher.apply(docs)
+                    if isinstance(enriched, list) and len(enriched) == len(docs):
+                        docs = enriched
+                except Exception as exc:
+                    self._log_once(exc, "enrich")
+            for i, document in zip(index, docs):
+                try:
+                    if self._chain is not None:
+                        # Hash exactly what the line will hold: an enricher patch
+                        # may carry values (datetime, set, bytes, NaN) that
+                        # _dumps encodes differently from canonical()'s str().
+                        document = self._chain.stamp(json.loads(_dumps(document)))
+                    batch[i] = _dumps(document) + b"\n"
+                except Exception as exc:
+                    self._log_once(exc, "chain")
+        except Exception as exc:  # pragma: no cover - defensive
+            self._log_once(exc, "prepare")
 
     def _write_batch(self, batch: list[bytes]) -> None:
         """Write ``batch`` in file-sized segments — one ``os.write`` each.

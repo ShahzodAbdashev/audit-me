@@ -1,0 +1,391 @@
+{
+ "objects": {
+  "users": {
+   "singular": "user",
+   "uz": "foydalanuvchi"
+  },
+  "roles": {
+   "singular": "role",
+   "uz": "rol"
+  },
+  "departments": {
+   "singular": "department",
+   "uz": "bo'lim"
+  },
+  "permissions": {
+   "singular": "permission",
+   "uz": "ruxsat"
+  },
+  "profiles": {
+   "singular": "profile",
+   "uz": "profil"
+  },
+  "phones": {
+   "singular": "phone",
+   "uz": "telefon raqam"
+  },
+  "reports": {
+   "singular": "report",
+   "uz": "hisobot"
+  },
+  "files": {
+   "singular": "file",
+   "uz": "fayl"
+  },
+  "documents": {
+   "singular": "document",
+   "uz": "hujjat"
+  },
+  "logs": {
+   "singular": "log",
+   "uz": "log"
+  },
+  "search": {
+   "singular": "search",
+   "uz": "qidiruv"
+  },
+  "exports": {
+   "singular": "export",
+   "uz": "eksport"
+  },
+  "settings": {
+   "singular": "setting",
+   "uz": "sozlama"
+  },
+  "notifications": {
+   "singular": "notification",
+   "uz": "bildirishnoma"
+  },
+  "devices": {
+   "singular": "device",
+   "uz": "qurilma"
+  },
+  "orders": {
+   "singular": "order",
+   "uz": "buyurtma"
+  },
+  "tokens": {
+   "singular": "token",
+   "uz": "token"
+  },
+  "sessions": {
+   "singular": "session",
+   "uz": "sessiya"
+  },
+  "statistics": {
+   "singular": "statistics",
+   "uz": "statistika",
+   "singleton": "yes"
+  },
+  "stats": {
+   "singular": "statistics",
+   "uz": "statistika",
+   "singleton": "yes"
+  },
+  "cars": {
+   "singular": "car",
+   "uz": "avtomobil"
+  },
+  "vehicles": {
+   "singular": "vehicle",
+   "uz": "transport vositasi"
+  },
+  "border": {
+   "singular": "border",
+   "uz": "chegara"
+  },
+  "borders": {
+   "singular": "border",
+   "uz": "chegara"
+  },
+  "history": {
+   "singular": "history",
+   "uz": "tarix",
+   "singleton": "yes"
+  },
+  "map": {
+   "singular": "map",
+   "uz": "xarita",
+   "singleton": "yes"
+  },
+  "maps": {
+   "singular": "map",
+   "uz": "xarita"
+  },
+  "graph": {
+   "singular": "graph",
+   "uz": "graf",
+   "singleton": "yes"
+  },
+  "graphs": {
+   "singular": "graph",
+   "uz": "graf"
+  },
+  "audit": {
+   "singular": "audit",
+   "uz": "audit"
+  },
+  "tasks": {
+   "singular": "task",
+   "uz": "topshiriq"
+  },
+  "comments": {
+   "singular": "comment",
+   "uz": "izoh"
+  },
+  "messages": {
+   "singular": "message",
+   "uz": "xabar"
+  },
+  "groups": {
+   "singular": "group",
+   "uz": "guruh"
+  },
+  "organizations": {
+   "singular": "organization",
+   "uz": "tashkilot"
+  },
+  "regions": {
+   "singular": "region",
+   "uz": "hudud"
+  },
+  "persons": {
+   "singular": "person",
+   "uz": "shaxs"
+  },
+  "employees": {
+   "singular": "employee",
+   "uz": "xodim"
+  },
+  "images": {
+   "singular": "image",
+   "uz": "rasm"
+  },
+  "photos": {
+   "singular": "photo",
+   "uz": "surat"
+  },
+  "accounts": {
+   "singular": "account",
+   "uz": "hisob"
+  },
+  "passwords": {
+   "singular": "password",
+   "uz": "parol"
+  },
+  "events": {
+   "singular": "event",
+   "uz": "hodisa"
+  },
+  "requests": {
+   "singular": "request",
+   "uz": "so'rov"
+  },
+  "categories": {
+   "singular": "category",
+   "uz": "kategoriya"
+  },
+  "products": {
+   "singular": "product",
+   "uz": "mahsulot"
+  },
+  "payments": {
+   "singular": "payment",
+   "uz": "to'lov"
+  },
+  "addresses": {
+   "singular": "address",
+   "uz": "manzil"
+  },
+  "contacts": {
+   "singular": "contact",
+   "uz": "kontakt"
+  },
+  "auth": {
+   "singular": "auth",
+   "uz": "avtorizatsiya"
+  },
+  "numbers": {
+   "singular": "number",
+   "uz": "raqam"
+  },
+  "passports": {
+   "singular": "passport",
+   "uz": "pasport"
+  },
+  "dashboard": {
+   "singular": "dashboard",
+   "uz": "boshqaruv paneli",
+   "uz_acc": "boshqaruv panelini",
+   "uz_plural": "boshqaruv panellari",
+   "uz_plural_acc": "boshqaruv panellarini",
+   "singleton": "yes"
+  },
+  "timeline": {
+   "singular": "timeline",
+   "uz": "vaqt chizig'i",
+   "uz_acc": "vaqt chizig'ini",
+   "uz_plural": "vaqt chiziqlari",
+   "uz_plural_acc": "vaqt chiziqlarini",
+   "singleton": "yes"
+  },
+  "root": {
+   "singular": "root",
+   "uz": "bosh sahifa",
+   "singleton": "yes"
+  },
+  "profile": {
+   "singular": "profile",
+   "uz": "profil",
+   "singleton": "yes"
+  },
+  "jobs": {
+   "singular": "job",
+   "uz": "vazifa"
+  },
+  "scans": {
+   "singular": "scan",
+   "uz": "skanerlash",
+   "uz_acc": "skanerlashni",
+   "uz_plural": "skanerlashlar"
+  },
+  "uploads": {
+   "singular": "upload",
+   "uz": "yuklama"
+  },
+  "activity": {
+   "singular": "activity",
+   "uz": "faollik",
+   "singleton": "yes"
+  },
+  "actions": {
+   "singular": "action",
+   "uz": "amal"
+  }
+ },
+ "verbs": {
+  "viewed": {
+   "uz": "ko'rdi",
+   "form": "acc"
+  },
+  "listed": {
+   "uz": "ro'yxatini ko'rdi",
+   "form": "plural"
+  },
+  "created": {
+   "uz": "yaratdi",
+   "form": "nom"
+  },
+  "updated": {
+   "uz": "tahrirladi",
+   "form": "acc"
+  },
+  "deleted": {
+   "uz": "o'chirdi",
+   "form": "acc"
+  },
+  "exported": {
+   "uz": "eksport qildi",
+   "form": "acc",
+   "segments": "export"
+  },
+  "downloaded": {
+   "uz": "yuklab oldi",
+   "form": "acc",
+   "segments": "download"
+  },
+  "uploaded": {
+   "uz": "yukladi",
+   "form": "acc",
+   "segments": "upload"
+  },
+  "imported": {
+   "uz": "import qildi",
+   "form": "acc",
+   "segments": "import"
+  },
+  "searched": {
+   "uz": "qidirdi",
+   "form": "acc",
+   "segments": "search find"
+  },
+  "blocked": {
+   "uz": "blokladi",
+   "form": "acc",
+   "segments": "block ban"
+  },
+  "unblocked": {
+   "uz": "blokdan chiqardi",
+   "form": "acc",
+   "segments": "unblock unban"
+  },
+  "activated": {
+   "uz": "faollashtirdi",
+   "form": "acc",
+   "segments": "activate enable"
+  },
+  "deactivated": {
+   "uz": "faolsizlantirdi",
+   "form": "acc",
+   "segments": "deactivate disable"
+  },
+  "approved": {
+   "uz": "tasdiqladi",
+   "form": "acc",
+   "segments": "approve confirm"
+  },
+  "rejected": {
+   "uz": "rad etdi",
+   "form": "acc",
+   "segments": "reject decline"
+  },
+  "restored": {
+   "uz": "tikladi",
+   "form": "acc",
+   "segments": "restore"
+  },
+  "assigned": {
+   "uz": "biriktirdi",
+   "form": "acc",
+   "segments": "assign"
+  },
+  "refreshed": {
+   "uz": "yangiladi",
+   "form": "acc",
+   "segments": "refresh"
+  },
+  "logged_in": {
+   "uz": "tizimga kirdi",
+   "form": "none",
+   "segments": "login signin sign-in sign_in"
+  },
+  "logged_out": {
+   "uz": "tizimdan chiqdi",
+   "form": "none",
+   "segments": "logout signout sign-out sign_out"
+  },
+  "requested": {
+   "uz": "bo'yicha so'rov yubordi",
+   "form": "nom"
+  },
+  "revoked": {
+   "uz": "bekor qildi",
+   "form": "acc",
+   "segments": "revoke"
+  }
+ },
+ "fields": {
+  "full_name": "F.I.Sh.",
+  "username": "Login",
+  "role_id": "Rol",
+  "department_id": "Bo'lim",
+  "phone": "Telefon raqam",
+  "email": "Elektron pochta",
+  "is_active": "Faol",
+  "password": "Parol",
+  "status": "Holat",
+  "name": "Nomi",
+  "description": "Tavsif",
+  "permissions": "Ruxsatlar"
+ }
+}

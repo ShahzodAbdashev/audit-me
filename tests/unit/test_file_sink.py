@@ -16,6 +16,7 @@ import math
 import os
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -2700,3 +2701,185 @@ async def test_N2_5_close_does_not_wait_on_the_fd_handover(tmp_path: Path) -> No
     assert sink._orphan_fds == set()
     with pytest.raises(OSError):
         os.fstat(borrowed)
+
+
+async def test_FR_18_submit_from_a_foreign_thread_enqueues_on_the_loop(
+    make_sink: Callable[..., FileSink],
+) -> None:
+    sink = make_sink()
+    await sink.start()
+    loop_thread = threading.get_ident()
+    appended_on: list[int] = []
+
+    class Spy(deque):  # type: ignore[type-arg]
+        def append(self, item: Any) -> None:
+            appended_on.append(threading.get_ident())
+            super().append(item)
+
+    sink._queue = Spy(sink._queue)
+    assert await asyncio.to_thread(sink.submit, doc(1)) is True
+    await asyncio.sleep(0)
+    assert appended_on == [loop_thread]
+    assert sink._queue_bytes == line_size(doc(1))
+
+
+# ---------------------------------------------------------------------------
+# Round 2 — optional chain= / enricher= hooks on the writer thread
+# ---------------------------------------------------------------------------
+
+
+class _FakeChain:
+    def __init__(self) -> None:
+        self.seq = 0
+        self.threads: set[int] = set()
+
+    def stamp(self, document: dict[str, Any]) -> dict[str, Any]:
+        self.threads.add(threading.get_ident())
+        self.seq += 1
+        document["seq"] = self.seq
+        document["saw_enriched"] = document.get("enriched", False)
+        return document
+
+
+class _FakeEnricher:
+    def __init__(self, boom: bool = False) -> None:
+        self.boom = boom
+        self.calls = 0
+
+    def apply(self, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.calls += 1
+        if self.boom:
+            raise RuntimeError("enricher broke")
+        for d in docs:
+            d["enriched"] = True
+        return docs
+
+
+def _hooked_sink(tmp_path: Path, **kwargs: Any) -> FileSink:
+    return FileSink(make_config(tmp_path / "audit"), InMemoryMetrics(), **kwargs)
+
+
+async def test_hooks_off_the_batch_path_is_byte_for_byte_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def never(_batch: list[bytes]) -> None:
+        raise AssertionError("_prepare_batch must not run without hooks")
+
+    sink = _hooked_sink(tmp_path)
+    monkeypatch.setattr(sink, "_prepare_batch", never)
+    docs = [doc(i) for i in range(5)] + [{"x": float("nan"), "s": "é"}]
+    for d in docs:
+        sink.submit(d)
+    await sink.close()
+    assert sink.path.read_bytes() == b"".join(fs._dumps(d) + b"\n" for d in docs)
+
+
+async def test_hooks_enrich_then_stamp_in_file_order_on_the_writer_thread(
+    tmp_path: Path,
+) -> None:
+    chain, enricher = _FakeChain(), _FakeEnricher()
+    sink = _hooked_sink(tmp_path, chain=chain, enricher=enricher)
+    await sink.start()
+    for i in range(10):
+        sink.submit(doc(i))
+    await sink.flush()
+    for i in range(10, 15):
+        sink.submit(doc(i))
+    await sink.close()
+    rows = [json.loads(line) for line in read_lines(sink.path)]
+    assert [r["i"] for r in rows] == list(range(15))
+    assert [r["seq"] for r in rows] == list(range(1, 16))
+    assert all(r["enriched"] and r["saw_enriched"] for r in rows)
+    assert threading.get_ident() not in chain.threads
+
+
+async def test_hooks_an_unparseable_line_is_written_unchanged(tmp_path: Path) -> None:
+    chain = _FakeChain()
+    sink = _hooked_sink(tmp_path, chain=chain)
+    await sink.start()
+    sink.submit(doc(0))
+    sink._enqueue(b"not json\n")
+    sink._enqueue(b"[1,2]\n")
+    sink.submit(doc(1))
+    await sink.close()
+    lines = sink.path.read_bytes().splitlines()
+    assert lines[1:3] == [b"not json", b"[1,2]"]
+    assert [json.loads(lines[i])["seq"] for i in (0, 3)] == [1, 2]
+
+
+async def test_hooks_a_failing_enricher_still_writes_and_stamps(tmp_path: Path) -> None:
+    chain, enricher = _FakeChain(), _FakeEnricher(boom=True)
+    sink = _hooked_sink(tmp_path, chain=chain, enricher=enricher)
+    for i in range(3):
+        sink.submit(doc(i))
+    await sink.close()
+    rows = [json.loads(line) for line in read_lines(sink.path)]
+    assert [r["seq"] for r in rows] == [1, 2, 3]
+    assert enricher.calls == 1
+    assert not any("enriched" in r for r in rows)
+
+
+async def test_hooks_a_retried_batch_is_not_stamped_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chain = _FakeChain()
+    sink = _hooked_sink(tmp_path, chain=chain)
+    await sink.start()
+    failures = {"left": 1}
+
+    def hook(fd: int, _data: Any) -> int | None:
+        if fd == sink._fd and failures["left"]:
+            failures["left"] -= 1
+            raise OSError(errno.EIO, "boom")
+        return None
+
+    patch_os_write(monkeypatch, hook)
+    for i in range(4):
+        sink.submit(doc(i))
+    await sink._flush_once()
+    assert sink._retry is not None
+    await sink._flush_once()
+    await sink.close()
+    rows = [json.loads(line) for line in read_lines(sink.path)]
+    assert [r["seq"] for r in rows] == [1, 2, 3, 4]
+    assert chain.seq == 4
+
+
+async def test_hooks_chain_hashes_what_the_line_holds(tmp_path: Path) -> None:
+    """An enricher patch with non-JSON values (datetime, set, bytes, NaN) must not
+    make the stamped hash differ from what is written (review: canonical vs _dumps)."""
+    import datetime as _dt
+
+    from audit_logging.semantic.integrity import Chain, verify
+
+    class Odd:
+        def apply(self, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            for d in docs:
+                d.setdefault("audit", {})["detail"] = {
+                    "opened": _dt.datetime(2026, 9, 28, 10, 0), "s": {1}, "b": b"x", "n": float("nan")}
+            return docs
+
+    sink = _hooked_sink(tmp_path, chain=Chain("svc", 1, 0), enricher=Odd())
+    for i in range(3):
+        sink.submit(doc(i))
+    await sink.close()
+    rows = [json.loads(line) for line in read_lines(sink.path)]
+    assert rows[0]["audit"]["detail"]["opened"] == "2026-09-28T10:00:00"
+    report = verify(rows)
+    assert (report.ok, report.documents, report.broken) == (True, 3, [])
+
+
+async def test_FR_39_every_sink_drop_path_adds_to_lost_total(tmp_path: Path) -> None:
+    metrics = InMemoryMetrics()
+    config = make_config(tmp_path / "audit", queue_max_bytes=1024, flush_max_bytes=1024)
+    sink = FileSink(config, metrics)
+    sink.submit({"big": "x" * 4096})              # queue full -> dropped_total
+    sink._drop_unserialisable(ValueError("x"))    # -> failed_total
+    sink._keep_or_lose([b"a\n", b"b\n"], True)    # retry failed -> failed_total x2
+    await sink.close()
+    sink.submit(doc(0))                           # after close
+    snap = metrics.snapshot()
+    parts = (snap["audit_documents_dropped_total"] + snap["audit_documents_failed_total"]
+             + snap["audit_documents_dropped_after_close_total"])
+    assert parts == 5
+    assert snap["audit_documents_lost_total"] == parts

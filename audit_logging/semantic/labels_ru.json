@@ -1,0 +1,444 @@
+{
+ "objects": {
+  "users": {
+   "ru": "пользователь",
+   "ru_acc": "пользователя",
+   "ru_plural": "пользователей",
+   "ru_plural_gen": "пользователей"
+  },
+  "roles": {
+   "ru": "роль",
+   "ru_acc": "роль",
+   "ru_plural": "роли",
+   "ru_plural_gen": "ролей"
+  },
+  "departments": {
+   "ru": "отдел",
+   "ru_acc": "отдел",
+   "ru_plural": "отделы",
+   "ru_plural_gen": "отделов"
+  },
+  "permissions": {
+   "ru": "разрешение",
+   "ru_acc": "разрешение",
+   "ru_plural": "разрешения",
+   "ru_plural_gen": "разрешений"
+  },
+  "profiles": {
+   "ru": "профиль",
+   "ru_acc": "профиль",
+   "ru_plural": "профили",
+   "ru_plural_gen": "профилей"
+  },
+  "phones": {
+   "ru": "номер телефона",
+   "ru_acc": "номер телефона",
+   "ru_plural": "номера телефонов",
+   "ru_plural_gen": "номеров телефонов"
+  },
+  "reports": {
+   "ru": "отчёт",
+   "ru_acc": "отчёт",
+   "ru_plural": "отчёты",
+   "ru_plural_gen": "отчётов"
+  },
+  "files": {
+   "ru": "файл",
+   "ru_acc": "файл",
+   "ru_plural": "файлы",
+   "ru_plural_gen": "файлов"
+  },
+  "documents": {
+   "ru": "документ",
+   "ru_acc": "документ",
+   "ru_plural": "документы",
+   "ru_plural_gen": "документов"
+  },
+  "logs": {
+   "ru": "журнал",
+   "ru_acc": "журнал",
+   "ru_plural": "журналы",
+   "ru_plural_gen": "журналов"
+  },
+  "search": {
+   "ru": "поиск",
+   "ru_acc": "поиск",
+   "ru_plural": "поиски",
+   "ru_plural_gen": "поисков"
+  },
+  "exports": {
+   "ru": "экспорт",
+   "ru_acc": "экспорт",
+   "ru_plural": "экспорты",
+   "ru_plural_gen": "экспортов"
+  },
+  "settings": {
+   "ru": "настройка",
+   "ru_acc": "настройку",
+   "ru_plural": "настройки",
+   "ru_plural_gen": "настроек"
+  },
+  "notifications": {
+   "ru": "уведомление",
+   "ru_acc": "уведомление",
+   "ru_plural": "уведомления",
+   "ru_plural_gen": "уведомлений"
+  },
+  "devices": {
+   "ru": "устройство",
+   "ru_acc": "устройство",
+   "ru_plural": "устройства",
+   "ru_plural_gen": "устройств"
+  },
+  "orders": {
+   "ru": "заказ",
+   "ru_acc": "заказ",
+   "ru_plural": "заказы",
+   "ru_plural_gen": "заказов"
+  },
+  "tokens": {
+   "ru": "токен",
+   "ru_acc": "токен",
+   "ru_plural": "токены",
+   "ru_plural_gen": "токенов"
+  },
+  "sessions": {
+   "ru": "сессия",
+   "ru_acc": "сессию",
+   "ru_plural": "сессии",
+   "ru_plural_gen": "сессий"
+  },
+  "statistics": {
+   "ru": "статистика",
+   "ru_acc": "статистику",
+   "ru_plural": "статистику",
+   "ru_plural_gen": "статистики"
+  },
+  "stats": {
+   "ru": "статистика",
+   "ru_acc": "статистику",
+   "ru_plural": "статистику",
+   "ru_plural_gen": "статистики"
+  },
+  "cars": {
+   "ru": "автомобиль",
+   "ru_acc": "автомобиль",
+   "ru_plural": "автомобили",
+   "ru_plural_gen": "автомобилей"
+  },
+  "vehicles": {
+   "ru": "транспортное средство",
+   "ru_acc": "транспортное средство",
+   "ru_plural": "транспортные средства",
+   "ru_plural_gen": "транспортных средств"
+  },
+  "border": {
+   "ru": "граница",
+   "ru_acc": "границу",
+   "ru_plural": "границы",
+   "ru_plural_gen": "границ"
+  },
+  "borders": {
+   "ru": "граница",
+   "ru_acc": "границу",
+   "ru_plural": "границы",
+   "ru_plural_gen": "границ"
+  },
+  "history": {
+   "ru": "история",
+   "ru_acc": "историю",
+   "ru_plural": "истории",
+   "ru_plural_gen": "историй"
+  },
+  "map": {
+   "ru": "карта",
+   "ru_acc": "карту",
+   "ru_plural": "карты",
+   "ru_plural_gen": "карт"
+  },
+  "maps": {
+   "ru": "карта",
+   "ru_acc": "карту",
+   "ru_plural": "карты",
+   "ru_plural_gen": "карт"
+  },
+  "graph": {
+   "ru": "граф",
+   "ru_acc": "граф",
+   "ru_plural": "графы",
+   "ru_plural_gen": "графов"
+  },
+  "graphs": {
+   "ru": "граф",
+   "ru_acc": "граф",
+   "ru_plural": "графы",
+   "ru_plural_gen": "графов"
+  },
+  "audit": {
+   "ru": "аудит",
+   "ru_acc": "аудит",
+   "ru_plural": "аудиты",
+   "ru_plural_gen": "аудитов"
+  },
+  "tasks": {
+   "ru": "задача",
+   "ru_acc": "задачу",
+   "ru_plural": "задачи",
+   "ru_plural_gen": "задач"
+  },
+  "comments": {
+   "ru": "комментарий",
+   "ru_acc": "комментарий",
+   "ru_plural": "комментарии",
+   "ru_plural_gen": "комментариев"
+  },
+  "messages": {
+   "ru": "сообщение",
+   "ru_acc": "сообщение",
+   "ru_plural": "сообщения",
+   "ru_plural_gen": "сообщений"
+  },
+  "groups": {
+   "ru": "группа",
+   "ru_acc": "группу",
+   "ru_plural": "группы",
+   "ru_plural_gen": "групп"
+  },
+  "organizations": {
+   "ru": "организация",
+   "ru_acc": "организацию",
+   "ru_plural": "организации",
+   "ru_plural_gen": "организаций"
+  },
+  "regions": {
+   "ru": "регион",
+   "ru_acc": "регион",
+   "ru_plural": "регионы",
+   "ru_plural_gen": "регионов"
+  },
+  "persons": {
+   "ru": "лицо",
+   "ru_acc": "лицо",
+   "ru_plural": "лица",
+   "ru_plural_gen": "лиц"
+  },
+  "employees": {
+   "ru": "сотрудник",
+   "ru_acc": "сотрудника",
+   "ru_plural": "сотрудников",
+   "ru_plural_gen": "сотрудников"
+  },
+  "images": {
+   "ru": "изображение",
+   "ru_acc": "изображение",
+   "ru_plural": "изображения",
+   "ru_plural_gen": "изображений"
+  },
+  "photos": {
+   "ru": "фотография",
+   "ru_acc": "фотографию",
+   "ru_plural": "фотографии",
+   "ru_plural_gen": "фотографий"
+  },
+  "accounts": {
+   "ru": "учётная запись",
+   "ru_acc": "учётную запись",
+   "ru_plural": "учётные записи",
+   "ru_plural_gen": "учётных записей"
+  },
+  "passwords": {
+   "ru": "пароль",
+   "ru_acc": "пароль",
+   "ru_plural": "пароли",
+   "ru_plural_gen": "паролей"
+  },
+  "events": {
+   "ru": "событие",
+   "ru_acc": "событие",
+   "ru_plural": "события",
+   "ru_plural_gen": "событий"
+  },
+  "requests": {
+   "ru": "запрос",
+   "ru_acc": "запрос",
+   "ru_plural": "запросы",
+   "ru_plural_gen": "запросов"
+  },
+  "categories": {
+   "ru": "категория",
+   "ru_acc": "категорию",
+   "ru_plural": "категории",
+   "ru_plural_gen": "категорий"
+  },
+  "products": {
+   "ru": "товар",
+   "ru_acc": "товар",
+   "ru_plural": "товары",
+   "ru_plural_gen": "товаров"
+  },
+  "payments": {
+   "ru": "платёж",
+   "ru_acc": "платёж",
+   "ru_plural": "платежи",
+   "ru_plural_gen": "платежей"
+  },
+  "addresses": {
+   "ru": "адрес",
+   "ru_acc": "адрес",
+   "ru_plural": "адреса",
+   "ru_plural_gen": "адресов"
+  },
+  "contacts": {
+   "ru": "контакт",
+   "ru_acc": "контакт",
+   "ru_plural": "контакты",
+   "ru_plural_gen": "контактов"
+  },
+  "auth": {
+   "ru": "авторизация",
+   "ru_acc": "авторизацию",
+   "ru_plural": "авторизации",
+   "ru_plural_gen": "авторизаций"
+  },
+  "numbers": {
+   "ru": "номер",
+   "ru_acc": "номер",
+   "ru_plural": "номера",
+   "ru_plural_gen": "номеров"
+  },
+  "passports": {
+   "ru": "паспорт",
+   "ru_acc": "паспорт",
+   "ru_plural": "паспорта",
+   "ru_plural_gen": "паспортов"
+  },
+  "dashboard": {
+   "ru": "панель управления",
+   "ru_acc": "панель управления",
+   "ru_plural": "панели управления",
+   "ru_plural_gen": "панелей управления"
+  },
+  "timeline": {
+   "ru": "хронология",
+   "ru_acc": "хронологию",
+   "ru_plural": "хронологии",
+   "ru_plural_gen": "хронологий"
+  },
+  "root": {
+   "ru": "главная страница",
+   "ru_acc": "главную страницу",
+   "ru_plural": "главные страницы",
+   "ru_plural_gen": "главных страниц"
+  },
+  "profile": {
+   "ru": "профиль",
+   "ru_acc": "профиль",
+   "ru_plural": "профили",
+   "ru_plural_gen": "профилей"
+  },
+  "jobs": {
+   "ru": "задание",
+   "ru_acc": "задание",
+   "ru_plural": "задания",
+   "ru_plural_gen": "заданий"
+  },
+  "scans": {
+   "ru": "сканирование",
+   "ru_acc": "сканирование",
+   "ru_plural": "сканирования",
+   "ru_plural_gen": "сканирований"
+  },
+  "uploads": {
+   "ru": "загрузка",
+   "ru_acc": "загрузку",
+   "ru_plural": "загрузки",
+   "ru_plural_gen": "загрузок"
+  },
+  "activity": {
+   "ru": "активность",
+   "ru_acc": "активность",
+   "ru_plural": "активности",
+   "ru_plural_gen": "активностей"
+  },
+  "actions": {
+   "ru": "действие",
+   "ru_acc": "действие",
+   "ru_plural": "действия",
+   "ru_plural_gen": "действий"
+  }
+ },
+ "verbs": {
+  "viewed": {
+   "ru": "просмотрел"
+  },
+  "listed": {
+   "ru": "просмотрел список",
+   "ru_form": "plural_gen"
+  },
+  "created": {
+   "ru": "создал",
+   "ru_form": "acc"
+  },
+  "updated": {
+   "ru": "изменил"
+  },
+  "deleted": {
+   "ru": "удалил"
+  },
+  "exported": {
+   "ru": "экспортировал"
+  },
+  "downloaded": {
+   "ru": "скачал"
+  },
+  "uploaded": {
+   "ru": "загрузил"
+  },
+  "imported": {
+   "ru": "импортировал"
+  },
+  "searched": {
+   "ru": "искал"
+  },
+  "blocked": {
+   "ru": "заблокировал"
+  },
+  "unblocked": {
+   "ru": "разблокировал"
+  },
+  "activated": {
+   "ru": "активировал"
+  },
+  "deactivated": {
+   "ru": "деактивировал"
+  },
+  "approved": {
+   "ru": "подтвердил"
+  },
+  "rejected": {
+   "ru": "отклонил"
+  },
+  "restored": {
+   "ru": "восстановил"
+  },
+  "assigned": {
+   "ru": "назначил"
+  },
+  "refreshed": {
+   "ru": "обновил"
+  },
+  "revoked": {
+   "ru": "отозвал"
+  },
+  "logged_in": {
+   "ru": "вошёл в систему"
+  },
+  "logged_out": {
+   "ru": "вышел из системы"
+  },
+  "requested": {
+   "ru": "отправил запрос:",
+   "ru_form": "nom"
+  }
+ }
+}

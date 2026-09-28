@@ -11,11 +11,12 @@
   "_meta": {
     "package": "audit_logging",
     "owner": "A5 \u2014 infrastructure",
-    "schema": "docs/schema.md (frozen, Phase 0 exit)",
+    "schema": "docs/schema.md v2 (0.1 base + semantic.schema.MAPPING_ADDITIONS)",
     "description": "API request audit documents. Monolithic on purpose: composed_of is empty so that no built-in or operator-supplied component template (logs@settings, logs@mappings, *@custom) can merge in a dynamic:true mapping. Everything this data stream is mapped by is in this one file.",
-    "field_budget": "45 leaf fields per docs/schema.md \u00a73, plus object containers and 'labels'; total_fields.limit is 200 (AC-10)",
+    "field_budget": "126 mapping entries in v2: 63 from 0.1 per docs/schema.md \u00a73 plus 63 from MAPPING_ADDITIONS (multi-fields included); total_fields.limit is 200 (AC-10)",
     "ilm_policy": "{dataset}-ilm",
-    "managed_by": "infra/elasticsearch/bootstrap.py"
+    "managed_by": "infra/elasticsearch/bootstrap.py",
+    "schema_version": "2"
   },
   "template": {
     "settings": {
@@ -105,6 +106,13 @@
             "outcome": {
               "type": "keyword",
               "ignore_above": 32
+            },
+            "id": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "ingested": {
+              "type": "date"
             }
           }
         },
@@ -234,6 +242,26 @@
             "roles": {
               "type": "keyword",
               "ignore_above": 256
+            },
+            "full_name": {
+              "type": "text",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 512
+                }
+              }
+            },
+            "department": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "verified": {
+              "type": "boolean"
+            },
+            "source": {
+              "type": "keyword",
+              "ignore_above": 256
             }
           }
         },
@@ -318,12 +346,258 @@
                   "ignore_above": 1024
                 }
               }
+            },
+            "schema_version": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "category": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "risk": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "sensitivity": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "derived": {
+              "type": "boolean"
+            },
+            "level": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "result": {
+              "type": "keyword",
+              "ignore_above": 256
+            },
+            "description": {
+              "type": "text"
+            },
+            "count": {
+              "type": "long"
+            },
+            "target": {
+              "dynamic": false,
+              "properties": {
+                "type": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "id": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "label": {
+                  "type": "text",
+                  "fields": {
+                    "keyword": {
+                      "type": "keyword",
+                      "ignore_above": 512
+                    }
+                  }
+                },
+                "pinpp": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "msisdn": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "passport": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "imei": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "changes": {
+              "dynamic": false,
+              "properties": {
+                "diff": {
+                  "type": "nested",
+                  "dynamic": false,
+                  "properties": {
+                    "field": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "label": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "old": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "new": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    }
+                  }
+                },
+                "before": {
+                  "type": "object",
+                  "dynamic": false,
+                  "enabled": false
+                },
+                "after": {
+                  "type": "object",
+                  "dynamic": false,
+                  "enabled": false
+                }
+              }
+            },
+            "detail": {
+              "type": "object",
+              "dynamic": false,
+              "enabled": false
+            },
+            "i18n": {
+              "dynamic": false,
+              "properties": {
+                "key": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "params": {
+                  "type": "object",
+                  "dynamic": false,
+                  "enabled": false
+                }
+              }
+            },
+            "session": {
+              "dynamic": false,
+              "properties": {
+                "id": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "client": {
+              "dynamic": false,
+              "properties": {
+                "ip_source": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "forwarded_chain": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "query": {
+              "dynamic": false,
+              "properties": {
+                "normalized": {
+                  "type": "nested",
+                  "dynamic": false,
+                  "properties": {
+                    "field": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "label": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "operator": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "value": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "logic": {
+                      "type": "keyword",
+                      "ignore_above": 256
+                    },
+                    "group": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "text": {
+                  "type": "text"
+                },
+                "datasource": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "tables": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "clause_count": {
+                  "type": "integer"
+                }
+              }
+            },
+            "clock_skew_ms": {
+              "type": "long"
+            },
+            "context": {
+              "dynamic": false,
+              "properties": {
+                "investigation_id": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "profile_id": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "integrity": {
+              "dynamic": false,
+              "properties": {
+                "chain": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "seq": {
+                  "type": "long"
+                },
+                "prev_hash": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                },
+                "hash": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
             }
           }
         },
         "labels": {
           "dynamic": false,
           "properties": {}
+        },
+        "message": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "tags": {
+          "type": "keyword",
+          "ignore_above": 256
         }
       }
     }

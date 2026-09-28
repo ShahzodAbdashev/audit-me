@@ -1,0 +1,12 @@
+[
+  {
+    "route": "DELETE /users/{user_id}",
+    "code": "admin.user.deleted",
+    "uz": "{actor} «{target}» foydalanuvchisini o'chirdi",
+    "category": "admin",
+    "risk": "critical",
+    "sensitivity": "internal",
+    "target": {"type": "user", "id": "path.user_id"},
+    "description": "Foydalanuvchini o'chirish"
+  }
+]

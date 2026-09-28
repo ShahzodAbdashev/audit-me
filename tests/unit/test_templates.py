@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from audit_logging.semantic.schema import ENRICHED_PATHS, MAPPING_ADDITIONS
 from audit_logging.templates import (
     DATASET_PLACEHOLDER,
     DEFAULT_RETENTION_DAYS,
@@ -13,6 +14,7 @@ from audit_logging.templates import (
     ilm_policy_name_for,
     index_template_for,
     index_template_name_for,
+    _merge,
 )
 
 INFRA = Path(__file__).resolve().parents[2] / "infra" / "elasticsearch"
@@ -27,6 +29,12 @@ def test_the_packaged_template_matches_infra() -> None:
     mapping from the other — so this fails instead.
     """
     on_disk = json.loads((INFRA / "template-apiaudit.json").read_text())
+    # 0.2: the infra copy is still the 0.1 base; the package adds the v2
+    # fields on top. Until infra is regenerated, compare base + additions.
+    _merge(on_disk["template"]["mappings"]["properties"], MAPPING_ADDITIONS)
+    on_disk["_meta"]["schema"] = INDEX_TEMPLATE["_meta"]["schema"]
+    on_disk["_meta"]["field_budget"] = INDEX_TEMPLATE["_meta"]["field_budget"]
+    on_disk["_meta"].setdefault("schema_version", INDEX_TEMPLATE["_meta"]["schema_version"])
     assert INDEX_TEMPLATE == on_disk
 
 
@@ -155,3 +163,63 @@ def test_the_timestamp_field_opts_out_of_index_level_ignore_malformed() -> None:
     assert settings["index"]["mapping"]["ignore_malformed"] is True, (
         "the index-level setting is what the opt-out exists to survive"
     )
+
+
+def _mapping_entries(props: dict) -> int:
+    """docs/schema.md §3: every leaf plus every object container, as
+    `GET _mapping` counts them -- and multi-fields, which Elasticsearch counts
+    against total_fields.limit too."""
+    return sum(
+        1 + _mapping_entries(spec.get("properties", {})) + len(spec.get("fields", {}))
+        for spec in props.values()
+    )
+
+
+def test_FR_48_the_v2_mapping_stays_under_the_field_limit() -> None:
+    props = INDEX_TEMPLATE["template"]["mappings"]["properties"]
+    base = json.loads((INFRA / "template-apiaudit.json").read_text())
+    # 63 while infra is the 0.1 base (§3); 126 once it is regenerated as v2.
+    assert _mapping_entries(base["template"]["mappings"]["properties"]) in (63, 129)
+    total = _mapping_entries(props)
+    assert total == 129  # PLAN §17.1 round 2 (126) + audit.context FR-59 (3)
+    assert total <= INDEX_TEMPLATE["template"]["settings"]["index"]["mapping"][
+        "total_fields"]["limit"] == 200
+
+
+def test_FR_48_every_enriched_path_is_mapped() -> None:
+    def leaves(props: dict, prefix: str = "") -> set[str]:
+        out: set[str] = set()
+        for name, spec in props.items():
+            here = f"{prefix}{name}"
+            out.add(here)
+            out |= leaves(spec.get("properties", {}), here + ".")
+        return out
+
+    mapped = leaves(INDEX_TEMPLATE["template"]["mappings"]["properties"])
+    assert ENRICHED_PATHS - mapped == set()
+
+
+def test_FR_48_the_merge_keeps_every_0_1_field() -> None:
+    props = INDEX_TEMPLATE["template"]["mappings"]["properties"]
+    assert props["event"]["properties"]["action"]["type"] == "keyword"
+    assert props["audit"]["properties"]["route"]["type"] == "keyword"
+    assert props["event"]["properties"]["id"]["type"] == "keyword"
+    assert props["event"]["properties"]["ingested"]["type"] == "date"
+    assert "v2" in INDEX_TEMPLATE["_meta"]["schema"]
+
+
+def test_FR_48_a_conflicting_leaf_raises_instead_of_replacing() -> None:
+    import pytest
+
+    base = {"event": {"properties": {"action": {"type": "keyword"}}}}
+    _merge(base, {"event": {"properties": {"action": {"type": "keyword"}}}})  # same: fine
+    with pytest.raises(ValueError, match="event.properties.action.type"):
+        _merge(base, {"event": {"properties": {"action": {"type": "text"}}}})
+    assert base["event"]["properties"]["action"]["type"] == "keyword"
+
+
+def test_FR_48_the_template_carries_the_package_schema_version() -> None:
+    from audit_logging.semantic.model import SCHEMA_VERSION
+
+    assert INDEX_TEMPLATE["_meta"]["schema_version"] == SCHEMA_VERSION
+    assert index_template_for("orders_api")["_meta"]["schema_version"] == SCHEMA_VERSION

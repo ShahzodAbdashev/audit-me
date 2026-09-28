@@ -45,11 +45,13 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import AuditConfig
 from ._contracts import Metrics
+from .semantic.model import SCHEMA_VERSION, TAG_CLOCK_SKEW
 
 __all__ = ["ElasticsearchShipper"]
 
@@ -80,6 +82,84 @@ def _pid_is_alive(pid: int) -> bool:
     except Exception:
         return True  # be conservative: do not steal a file on a strange error
     return True
+
+
+#: FR-41 default when the config has no ``max_clock_skew_s``.
+DEFAULT_MAX_CLOCK_SKEW_S = 300.0
+
+
+def _bulk_payload(
+    lines: list[bytes], index: str, ingested: str, max_skew_s: float = DEFAULT_MAX_CLOCK_SKEW_S
+) -> bytes:
+    """The NDJSON body: a ``create`` action (with ``_id`` = event.id) per stamped line.
+    CPU-bound (a parse and a dump per line), so it runs in a worker thread."""
+    parts: list[bytes] = []
+    for line in lines:
+        doc, doc_id = _stamp(line, ingested, max_skew_s)
+        meta: dict[str, Any] = {"_index": index}
+        if doc_id is not None:
+            meta["_id"] = doc_id
+        parts += (json.dumps({"create": meta}).encode(), doc)
+    return b"\n".join(parts) + b"\n"
+
+
+def _now_iso_ms() -> str:
+    """UTC now as ``2026-09-28T05:41:09.020Z``."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return ts if ts.tzinfo is not None else None
+
+
+def _mark_skew(doc: dict[str, Any], ingested: str, max_skew_s: float) -> None:
+    """FR-41: past the threshold, record the signed skew (ingested - @timestamp)
+    in ``audit.clock_skew_ms`` and tag the document ``clock_skew``."""
+    at, now = _parse_ts(doc.get("@timestamp")), _parse_ts(ingested)
+    if at is None or now is None:
+        return
+    skew_ms = round((now - at).total_seconds() * 1000)
+    if abs(skew_ms) <= max_skew_s * 1000:
+        return
+    audit = doc.setdefault("audit", {})
+    if not isinstance(audit, dict):
+        return  # not ours to reshape
+    audit["clock_skew_ms"] = skew_ms
+    tags = doc.get("tags")
+    if isinstance(tags, list):
+        if TAG_CLOCK_SKEW not in tags:
+            tags.append(TAG_CLOCK_SKEW)
+    else:
+        doc["tags"] = ([tags] if isinstance(tags, str) else []) + [TAG_CLOCK_SKEW]
+
+
+def _stamp(
+    line: bytes, ingested: str, max_skew_s: float = DEFAULT_MAX_CLOCK_SKEW_S
+) -> tuple[bytes, str | None]:
+    """Set ``event.ingested`` and the skew tag (FR-41); return the line and its ``event.id``.
+
+    A line that is not a JSON object is shipped unchanged, without an id.
+    """
+    try:
+        doc = json.loads(line)
+    except ValueError:
+        return line, None
+    if not isinstance(doc, dict):
+        return line, None
+    event = doc.setdefault("event", {})
+    if not isinstance(event, dict):
+        return line, None
+    event["ingested"] = ingested
+    _mark_skew(doc, ingested, max_skew_s)
+    doc_id = event.get("id")
+    stamped = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
+    return stamped, doc_id if isinstance(doc_id, str) and doc_id else None
 
 
 class ElasticsearchShipper:
@@ -275,9 +355,9 @@ class ElasticsearchShipper:
 
         Its offsets are in its own ``.audit-shipper-{pid}.json``, which nothing
         else reads. Without this the orphan is shipped from zero and every
-        record already indexed from it is sent a second time -- the bulk action
-        carries no ``_id``, so Elasticsearch stores the duplicate rather than
-        overwriting. Four gunicorn workers and a restart make that four whole
+        record already indexed from it is sent a second time -- a 0.1 line
+        carries no ``event.id``, so its bulk action has no ``_id`` and
+        Elasticsearch stores the duplicate. Four gunicorn workers and a restart make that four whole
         files, up to the rotation ceiling each.
         """
         key = self._key(path)
@@ -390,13 +470,21 @@ class ElasticsearchShipper:
                     break  # leave the offset; retry the same lines next tick
 
     async def _bulk(self, lines: list[bytes]) -> bool:
-        """POST one bulk request. ``True`` if it was accepted."""
+        """POST one bulk request. ``True`` if it was accepted.
+
+        A line carrying ``event.id`` is sent with that id as ``_id`` (FR-36), so
+        a replay — an adopted orphan, a lost state file — is refused with 409
+        instead of stored twice, and 409 therefore counts as delivered. Any
+        other per-document refusal is logged once per error type, counted as
+        rejected and lost, and skipped (X-8: no dead-letter file).
+        """
         client = await self._http()
         if client is None:
             return False
         index = self.config.index_name
-        action = json.dumps({"create": {"_index": index}}).encode()
-        payload = b"\n".join(part for line in lines for part in (action, line)) + b"\n"
+        # Off the loop: a 500-line batch of large documents is seconds of JSON work.
+        max_skew = float(getattr(self.config, "max_clock_skew_s", DEFAULT_MAX_CLOCK_SKEW_S))
+        payload = await asyncio.to_thread(_bulk_payload, lines, index, _now_iso_ms(), max_skew)
         try:
             response = await client.post(
                 "/_bulk",
@@ -417,36 +505,73 @@ class ElasticsearchShipper:
             return False
 
         body = response.json()
-        if body.get("errors"):
-            # Partial failure. The batch still counts as consumed: retrying it
-            # forever would block every later record behind a document
-            # Elasticsearch will never accept (a mapping conflict, say).
-            rejected = sum(
-                1
-                for item in body.get("items", [])
-                for op in item.values()
-                if op.get("status", 200) >= 300
-            )
-            first = next(
-                (
-                    op.get("error")
-                    for item in body.get("items", [])
-                    for op in item.values()
-                    if op.get("status", 200) >= 300
-                ),
-                None,
-            )
-            self._warn_once(
-                f"elasticsearch rejected {rejected} of {len(lines)} documents",
-                RuntimeError(json.dumps(first)[:400]),
-            )
-            self._count("audit_ship_rejected_total", rejected)
-            self._count("audit_ship_documents_total", len(lines) - rejected)
+        if not body.get("errors"):
+            self._count("audit_ship_documents_total", len(lines))
             return True
-        self._count("audit_ship_documents_total", len(lines))
+
+        # Partial failure. The batch still counts as consumed: retrying it
+        # forever would block every later record behind a document
+        # Elasticsearch will never accept (a mapping conflict, say). Items come
+        # back in request order, one per action.
+        failed = 0
+        for item in body.get("items", []):
+            for op in item.values():
+                status = op.get("status", 200)
+                if status >= 300 and status != 409:  # 409: already indexed
+                    failed += 1
+                    self._warn_refused(op.get("error"))
+        if failed:
+            self._count("audit_ship_rejected_total", failed)
+            self._count("audit_documents_lost_total", failed)
+        self._count("audit_ship_documents_total", len(lines) - failed)
         return True
 
+    def _warn_refused(self, error: Any) -> None:
+        """Once per ES error type, with the reason (X-8). Never raises."""
+        kind = error.get("type") if isinstance(error, dict) else None
+        reason = error.get("reason") if isinstance(error, dict) else error
+        key = f"refused:{kind}"
+        if key in self._logged:
+            return
+        self._logged.add(key)
+        _LOG.warning(
+            "audit_logging shipper: elasticsearch refused a document, skipped and "
+            "counted lost (%s: %s)",
+            kind,
+            str(reason)[:400],
+        )
+
     # -- one-time cluster setup -------------------------------------------
+
+    async def _push_mapping_to_write_index(self, client: Any, template: dict[str, Any]) -> None:
+        """FR-60: a template applies only when a backing index is created, so a
+        field added in a newer package would be stored but NOT searchable in the
+        data stream's current backing index until the next rollover. Adding
+        fields to a live mapping is allowed; push them onto the write index.
+        404 = the data stream does not exist yet (the template covers it);
+        anything else is warned once and shipping continues."""
+        mappings = template.get("template", {}).get("mappings", {})
+        body = {k: mappings[k] for k in ("properties", "dynamic", "date_detection",
+                                         "numeric_detection", "_meta") if k in mappings}
+        if "properties" in body:
+            # constant_keyword values are fixed by the first document
+            # (data_stream.namespace = "live"); re-sending the template's
+            # value-less definition is a conflict, and a constant cannot
+            # change anyway.
+            body["properties"] = _without_constants(body["properties"])
+        try:
+            response = await client.put(
+                f"/{self.config.index_name}/_mapping?write_index_only=true", json=body
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._warn_once("could not update the data stream mapping (continuing)", exc)
+            return
+        if response.status_code >= 300 and response.status_code != 404:
+            self._warn_once(
+                "could not update the data stream mapping; new fields are stored but "
+                "not searchable until the next rollover (continuing)",
+                RuntimeError(response.text[:400]),
+            )
 
     async def _bootstrap(self) -> None:
         """Install the ILM policy and index template, once, before shipping.
@@ -489,6 +614,8 @@ class ElasticsearchShipper:
                 rollover["max_primary_shard_size"] = self.config.rollover_max_size
             dataset = self.config.data_stream_dataset
             template = index_template_for(dataset)
+            if not await self._schema_version_allows_install(client):
+                return
             r1 = await client.put(
                 f"/_ilm/policy/{self.config.ilm_policy_name}", json=policy
             )
@@ -511,10 +638,52 @@ class ElasticsearchShipper:
             return
         if r1.status_code >= 300:
             self._warn_once("ILM policy install failed (continuing)", RuntimeError(r1.text[:200]))
+        await self._push_mapping_to_write_index(client, template)
         _LOG.info(
             "audit_logging: elasticsearch ready, shipping to %s", self.config.index_name
         )
         self._bootstrapped = True
+
+    async def _schema_version_allows_install(self, client: Any) -> bool:
+        """FR-48: never overwrite a template written for another schema version.
+
+        No template (404), or one without ``_meta.schema_version`` (0.1, whose
+        fields v2 keeps), may be installed over. A different version is only
+        replaced with ``schema_upgrade``; otherwise this logs an ERROR once and
+        the shipper stays un-bootstrapped, like a failed template install. An
+        unreadable answer also refuses, and retries next tick.
+        """
+        name = self.config.index_template_name
+        response = await client.get(f"/_index_template/{name}")
+        if response.status_code == 404:
+            return True
+        if response.status_code >= 300:
+            self._warn_once(
+                "could not read the existing index template — NOT shipping",
+                RuntimeError(response.text[:400]),
+            )
+            return False
+        existing = None
+        for entry in response.json().get("index_templates", []):
+            meta = entry.get("index_template", {}).get("_meta") or {}
+            existing = meta.get("schema_version", existing)
+        if existing is None or existing == SCHEMA_VERSION:
+            return True
+        if getattr(self.config, "schema_upgrade", False) is True:
+            _LOG.warning(
+                "audit_logging shipper: replacing index template %s schema_version %s "
+                "with %s (schema_upgrade)", name, existing, SCHEMA_VERSION,
+            )
+            return True
+        if "schema_version" not in self._logged:
+            self._logged.add("schema_version")
+            _LOG.error(
+                "audit_logging shipper: index template %s has schema_version %s, this "
+                "package writes %s — NOT overwriting it and NOT shipping; records stay "
+                "on disk. Set schema_upgrade to replace it.",
+                name, existing, SCHEMA_VERSION,
+            )
+        return False
 
     # -- plumbing ----------------------------------------------------------
 
@@ -566,3 +735,19 @@ class ElasticsearchShipper:
             return
         self._logged.add(kind)
         _LOG.warning("audit_logging shipper: %s (%s: %s)", message, type(exc).__name__, exc)
+
+
+def _without_constants(properties: dict[str, Any]) -> dict[str, Any]:
+    """A mapping ``properties`` tree minus every ``constant_keyword`` leaf (and
+    any object left empty by removing them). Pure; the input is not mutated."""
+    out: dict[str, Any] = {}
+    for name, spec in properties.items():
+        if not isinstance(spec, dict) or spec.get("type") == "constant_keyword":
+            continue
+        if "properties" in spec:
+            inner = _without_constants(spec["properties"])
+            if not inner:
+                continue
+            spec = {**spec, "properties": inner}
+        out[name] = spec
+    return out

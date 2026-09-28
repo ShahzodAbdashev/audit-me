@@ -1745,3 +1745,11 @@ def test_N3_1_the_budget_is_not_applied_to_server_defined_structures(
 
     wide = {f"p{i}": str(i) for i in range(5000)}
     assert len(_path_params({"path_params": wide}, DEFAULT_REDACT_KEYS)) == 5000
+
+
+def test_FR_25_0_2_user_keys_only_when_the_semantic_layer_is_on() -> None:
+    user = {"id": "1", "name": "a", "full_name": "A B", "department": "X", "source": "sso", "verified": True}
+    off = build_document(make_ctx(user=user), make_config(semantic_enabled=False))
+    assert off["user"] == {"id": "1", "name": "a"}
+    on = build_document(make_ctx(user=user), make_config())
+    assert on["user"] == user

@@ -1,0 +1,322 @@
+{
+ "objects": {
+  "users": {
+   "en": "user",
+   "en_plural": "users"
+  },
+  "roles": {
+   "en": "role",
+   "en_plural": "roles"
+  },
+  "departments": {
+   "en": "department",
+   "en_plural": "departments"
+  },
+  "permissions": {
+   "en": "permission",
+   "en_plural": "permissions"
+  },
+  "profiles": {
+   "en": "profile",
+   "en_plural": "profiles"
+  },
+  "phones": {
+   "en": "phone number",
+   "en_plural": "phone numbers"
+  },
+  "reports": {
+   "en": "report",
+   "en_plural": "reports"
+  },
+  "files": {
+   "en": "file",
+   "en_plural": "files"
+  },
+  "documents": {
+   "en": "document",
+   "en_plural": "documents"
+  },
+  "logs": {
+   "en": "log",
+   "en_plural": "logs"
+  },
+  "search": {
+   "en": "search",
+   "en_plural": "searches"
+  },
+  "exports": {
+   "en": "export",
+   "en_plural": "exports"
+  },
+  "settings": {
+   "en": "setting",
+   "en_plural": "settings"
+  },
+  "notifications": {
+   "en": "notification",
+   "en_plural": "notifications"
+  },
+  "devices": {
+   "en": "device",
+   "en_plural": "devices"
+  },
+  "orders": {
+   "en": "order",
+   "en_plural": "orders"
+  },
+  "tokens": {
+   "en": "token",
+   "en_plural": "tokens"
+  },
+  "sessions": {
+   "en": "session",
+   "en_plural": "sessions"
+  },
+  "statistics": {
+   "en": "statistics",
+   "en_plural": "statistics"
+  },
+  "stats": {
+   "en": "statistics",
+   "en_plural": "statistics"
+  },
+  "cars": {
+   "en": "car",
+   "en_plural": "cars"
+  },
+  "vehicles": {
+   "en": "vehicle",
+   "en_plural": "vehicles"
+  },
+  "border": {
+   "en": "border",
+   "en_plural": "borders"
+  },
+  "borders": {
+   "en": "border",
+   "en_plural": "borders"
+  },
+  "history": {
+   "en": "history",
+   "en_plural": "histories"
+  },
+  "map": {
+   "en": "map",
+   "en_plural": "maps"
+  },
+  "maps": {
+   "en": "map",
+   "en_plural": "maps"
+  },
+  "graph": {
+   "en": "graph",
+   "en_plural": "graphs"
+  },
+  "graphs": {
+   "en": "graph",
+   "en_plural": "graphs"
+  },
+  "audit": {
+   "en": "audit",
+   "en_plural": "audits"
+  },
+  "tasks": {
+   "en": "task",
+   "en_plural": "tasks"
+  },
+  "comments": {
+   "en": "comment",
+   "en_plural": "comments"
+  },
+  "messages": {
+   "en": "message",
+   "en_plural": "messages"
+  },
+  "groups": {
+   "en": "group",
+   "en_plural": "groups"
+  },
+  "organizations": {
+   "en": "organization",
+   "en_plural": "organizations"
+  },
+  "regions": {
+   "en": "region",
+   "en_plural": "regions"
+  },
+  "persons": {
+   "en": "person",
+   "en_plural": "persons"
+  },
+  "employees": {
+   "en": "employee",
+   "en_plural": "employees"
+  },
+  "images": {
+   "en": "image",
+   "en_plural": "images"
+  },
+  "photos": {
+   "en": "photo",
+   "en_plural": "photos"
+  },
+  "accounts": {
+   "en": "account",
+   "en_plural": "accounts"
+  },
+  "passwords": {
+   "en": "password",
+   "en_plural": "passwords"
+  },
+  "events": {
+   "en": "event",
+   "en_plural": "events"
+  },
+  "requests": {
+   "en": "request",
+   "en_plural": "requests"
+  },
+  "categories": {
+   "en": "category",
+   "en_plural": "categories"
+  },
+  "products": {
+   "en": "product",
+   "en_plural": "products"
+  },
+  "payments": {
+   "en": "payment",
+   "en_plural": "payments"
+  },
+  "addresses": {
+   "en": "address",
+   "en_plural": "addresses"
+  },
+  "contacts": {
+   "en": "contact",
+   "en_plural": "contacts"
+  },
+  "auth": {
+   "en": "authorization",
+   "en_plural": "authorizations"
+  },
+  "numbers": {
+   "en": "number",
+   "en_plural": "numbers"
+  },
+  "passports": {
+   "en": "passport",
+   "en_plural": "passports"
+  },
+  "dashboard": {
+   "en": "dashboard",
+   "en_plural": "dashboards"
+  },
+  "timeline": {
+   "en": "timeline",
+   "en_plural": "timelines"
+  },
+  "root": {
+   "en": "home page",
+   "en_plural": "home pages"
+  },
+  "profile": {
+   "en": "profile",
+   "en_plural": "profiles"
+  },
+  "jobs": {
+   "en": "job",
+   "en_plural": "jobs"
+  },
+  "scans": {
+   "en": "scan",
+   "en_plural": "scans"
+  },
+  "uploads": {
+   "en": "upload",
+   "en_plural": "uploads"
+  },
+  "activity": {
+   "en": "activity",
+   "en_plural": "activities"
+  },
+  "actions": {
+   "en": "action",
+   "en_plural": "actions"
+  }
+ },
+ "verbs": {
+  "viewed": {
+   "en": "viewed"
+  },
+  "listed": {
+   "en": "viewed the list of",
+   "en_form": "plural"
+  },
+  "created": {
+   "en": "created",
+   "en_form": "acc"
+  },
+  "updated": {
+   "en": "updated"
+  },
+  "deleted": {
+   "en": "deleted"
+  },
+  "exported": {
+   "en": "exported"
+  },
+  "downloaded": {
+   "en": "downloaded"
+  },
+  "uploaded": {
+   "en": "uploaded"
+  },
+  "imported": {
+   "en": "imported"
+  },
+  "searched": {
+   "en": "searched"
+  },
+  "blocked": {
+   "en": "blocked"
+  },
+  "unblocked": {
+   "en": "unblocked"
+  },
+  "activated": {
+   "en": "activated"
+  },
+  "deactivated": {
+   "en": "deactivated"
+  },
+  "approved": {
+   "en": "approved"
+  },
+  "rejected": {
+   "en": "rejected"
+  },
+  "restored": {
+   "en": "restored"
+  },
+  "assigned": {
+   "en": "assigned"
+  },
+  "refreshed": {
+   "en": "refreshed"
+  },
+  "revoked": {
+   "en": "revoked"
+  },
+  "logged_in": {
+   "en": "logged in"
+  },
+  "logged_out": {
+   "en": "logged out"
+  },
+  "requested": {
+   "en": "sent a request about",
+   "en_form": "nom"
+  }
+ }
+}
