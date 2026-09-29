@@ -64,6 +64,40 @@ def _derived(method: str, path: str, route: Any, service: str, labels: Labels, r
     return event
 
 
+def resolve_route(scope: dict[str, Any]) -> bool:
+    """FR-62: give a request that never reached the router its route.
+
+    A middleware that answers before routing (an ownership or auth check
+    returning 401/403) or a client that disconnected early leaves no
+    ``scope["route"]``, and the record would fall back to a derived, vague
+    sentence — on exactly the denied requests an auditor reads first. Match the
+    request against the app's own routes, as routing would have, and set
+    ``route`` and ``path_params``. CPU only, one pass over the route list,
+    only for requests that were not routed. Returns whether a route was found;
+    never raises.
+    """
+    if scope.get("route") is not None:
+        return False
+    try:
+        from starlette.routing import Match
+
+        app = scope.get("app")
+        routes = getattr(getattr(app, "router", None), "routes", None) or getattr(app, "routes", None)
+        for route in routes or ():
+            matches = getattr(route, "matches", None)
+            if matches is None:
+                continue
+            match, child = matches(scope)
+            if match == Match.FULL:
+                scope["route"] = route
+                scope["path_params"] = {**(scope.get("path_params") or {}),
+                                        **(child.get("path_params") or {})}
+                return True
+    except Exception:  # noqa: BLE001 - a hostile route object must not cost the record
+        return False
+    return False
+
+
 def describe(
     scope: dict[str, Any],
     method: str,
