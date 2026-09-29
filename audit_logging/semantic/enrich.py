@@ -252,9 +252,12 @@ def enrich(
     diff = _redacted_diff(bag, redact_keys) if bag is not None else []
     count = bag.count if bag is not None else None
 
+    identifiers = _identifiers(target, spec.id if spec else None, bag)
     params: dict[str, Any] = {
         "actor": _actor(doc),
-        "target": target.get("label") or target.get("id"),
+        # FR-63: an identifier reads in its canonical form (+998901234567), not
+        # as typed; a handler-given label still wins.
+        "target": target.get("label") or identifiers.get(str(target.get("type"))) or target.get("id"),
         "count": count,
         "service": service,
         "object": target.get("type"),
@@ -284,7 +287,6 @@ def enrich(
         audit["description"] = event_def.description
     if count is not None:
         audit["count"] = count
-    identifiers = _identifiers(target, spec.id if spec else None, bag)
     if target or identifiers:
         audit["target"] = {**target, **identifiers}
     query = _query(bag, redact_keys) if bag is not None else {}

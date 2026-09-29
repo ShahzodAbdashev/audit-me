@@ -56,7 +56,7 @@ from .semantic import runtime
 from .semantic.catalog import Catalog, load_catalog
 from .semantic.context import close_bag, current_bag, open_bag
 from .semantic.derive import Labels, load_labels
-from .semantic.describe import describe
+from .semantic.describe import describe, resolve_route
 from .semantic.enrich import enrich
 from .semantic.model import LEVEL_DERIVED
 from .semantic.startup import warn_if_sigterm_hijacked
@@ -142,6 +142,7 @@ class AuditMiddleware:
         "_sink",
         "_enabled",
         "_exclude",
+        "_exclude_exact",
         "_sink_started",
         "_sink_closed",
         "_max_body",
@@ -174,6 +175,8 @@ class AuditMiddleware:
         self._exclude: tuple[str, ...] = tuple(
             prefix.rstrip("/") for prefix in config.exclude_paths
         )
+        # FR-64: exact matches only, compared as configured ("/" is just "/").
+        self._exclude_exact: frozenset[str] = frozenset(config.exclude_exact_paths)
         self._max_body = int(config.max_body_bytes)
         self._sink_started = False
         self._shipper: Any = None
@@ -260,7 +263,10 @@ class AuditMiddleware:
         await self._handle_http(scope, receive, send, raw_path)
 
     def _is_excluded(self, raw_path: str) -> bool:
-        """FR-02 — prefix match, anchored on a path-segment boundary (N-13)."""
+        """FR-02 — prefix match, anchored on a path-segment boundary (N-13);
+        FR-64 — or an exact match on ``exclude_exact_paths``."""
+        if raw_path in self._exclude_exact:
+            return True
         for prefix in self._exclude:
             if not prefix:
                 return True
@@ -627,6 +633,9 @@ class AuditMiddleware:
             # counts the bodies and query strings it refuses to store
             # (``audit_bodies_skipped_total``, review N2-6/N2-3), which needs
             # the same counters the middleware already holds.
+            if self.config.semantic_enabled:
+                # FR-62: before build_document, so audit.route/path_params see it too.
+                resolve_route(ctx.scope)
             doc = build_document(ctx, self.config, metrics=self.metrics)
             if self._semantic:
                 doc = self._enrich(ctx, doc)

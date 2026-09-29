@@ -32,7 +32,8 @@ DEFAULT_EXCLUDE_PATHS: list[str] = [
 
 
 #: Fields whose environment value we parse ourselves (CSV *or* JSON).
-_RAW_LIST_FIELDS = frozenset({"exclude_paths", "extra_redact_keys", "extra_header_allowlist"})
+_RAW_LIST_FIELDS = frozenset({"exclude_paths", "exclude_exact_paths", "extra_redact_keys",
+                              "extra_header_allowlist"})
 
 
 class _RawListEnvSource(EnvSettingsSource):
@@ -224,6 +225,10 @@ class AuditConfig(BaseSettings):
     exclude_paths: list[str] = Field(
         default_factory=lambda: list(DEFAULT_EXCLUDE_PATHS)
     )
+    #: FR-64: paths skipped only on an EXACT match — a liveness probe on "/",
+    #: an ingest POST whose sub-paths must still be recorded. A prefix entry
+    #: cannot say either ("/" as a prefix would exclude everything).
+    exclude_exact_paths: list[str] = Field(default_factory=list)
 
     # --- redaction (additive only, FR-13) -----------------------------------
     extra_redact_keys: list[str] = Field(default_factory=list)
@@ -270,7 +275,8 @@ class AuditConfig(BaseSettings):
 
     _trusted_networks: tuple[Any, ...] = PrivateAttr(default=())
 
-    @field_validator("exclude_paths", "extra_redact_keys", "extra_header_allowlist", mode="before")
+    @field_validator("exclude_paths", "exclude_exact_paths", "extra_redact_keys",
+                     "extra_header_allowlist", mode="before")
     @classmethod
     def _split_csv(cls, v: Any) -> Any:
         """Accept ``AUDIT_EXCLUDE_PATHS=/a,/b`` as well as a JSON list."""
